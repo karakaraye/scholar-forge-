@@ -1,0 +1,75 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: scholarforge-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-scholarforge_db}
+      POSTGRES_USER: ${POSTGRES_USER:-scholarforge_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scholarforge_secure_pass}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scholarforge_user} -d ${POSTGRES_DB:-scholarforge_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - scholarforge-net
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../infrastructure/backend.Dockerfile
+    container_name: scholarforge-backend
+    restart: unless-stopped
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py seed_disciplines &&
+             python manage.py runserver 0.0.0.0:8000"
+    environment:
+      - DJANGO_DEBUG=False
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-scholarforge-prod-secret-key-change-me}
+      - DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,backend,frontend
+      - DB_ENGINE=postgresql
+      - POSTGRES_DB=${POSTGRES_DB:-scholarforge_db}
+      - POSTGRES_USER=${POSTGRES_USER:-scholarforge_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-scholarforge_secure_pass}
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - FRONTEND_URL=http://localhost:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - scholarforge-net
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../infrastructure/frontend.Dockerfile
+    container_name: scholarforge-frontend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - scholarforge-net
+
+networks:
+  scholarforge-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+    driver: local
