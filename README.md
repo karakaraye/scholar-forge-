@@ -108,10 +108,12 @@ scholarforge-ai/
 │   ├── accounts/                 # Custom User model & auth views
 │   ├── workspaces/               # Workspace, Membership & AuditEvent
 │   ├── disciplines/              # AcademicDiscipline model & seeds
-│   ├── projects/                 # ResearchProject & ResearchRequirements
+│   ├── projects/                 # ResearchProject, ResearchRequirements & access.py (role/capability policy)
 │   ├── documents/                # ResearchDocument, DocumentSection, DocumentVersion
-│   ├── research/                 # ResearchSource, ProjectSource, Citation, AIJob
+│   ├── research/                 # Stages 2–8: discovery, citations, methodology, statistics,
+│   │                             #   workflow, collaboration, formatting, export services
 │   ├── tests/                    # Pytest backend test suite
+│   ├── media/                    # (git-ignored) uploads & generated exports, see DJANGO_MEDIA_ROOT
 │   ├── manage.py
 │   └── requirements.txt
 ├── infrastructure/               # Docker & deployment orchestration
@@ -131,50 +133,30 @@ scholarforge-ai/
 
 ---
 
-## 🚀 Running Locally on Windows 11 with Docker Desktop
+## 💻 Running & Testing Locally
+
+The recommended local setup runs the backend and frontend directly on your machine. The Docker Compose stack in `infrastructure/` does **not** work yet (see [What's Left To Be Done](#-whats-left-to-be-done)).
 
 ### Prerequisites
-1. Windows 11 with WSL2 enabled.
-2. [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/) installed and running.
-3. Git.
+- Python **3.12**
+- Node.js **20** and npm
+- Git
+- *(Optional)* PostgreSQL 16. Without it the backend falls back to SQLite.
 
-### Step-by-Step Instructions
+### 1. Clone and configure
+```bash
+git clone https://github.com/karakaraye/scholar-forge-.git scholarforge-ai
+cd scholarforge-ai
+cp .env.example .env
+```
 
-1. **Clone and Navigate to Project:**
-   ```bash
-   cd scholarforge-ai
-   ```
+The backend reads `.env` from the repository root. Two things to decide in it:
 
-2. **Configure Environment:**
-   ```bash
-   cp .env.example .env
-   ```
+- **Database.** `.env.example` points at PostgreSQL. For a quick SQLite setup, comment out `DB_ENGINE` and every `POSTGRES_*` line. The backend only uses PostgreSQL when `DB_ENGINE=postgresql` or `POSTGRES_DB` is set.
+- **AI.** Keep `AI_MOCK_MODE=True` to use the offline, deterministic writing assistant. To use live generation, set `OPENAI_API_KEY` and `AI_MOCK_MODE=False`.
 
-3. **Launch Docker Services:**
-   ```bash
-   cd infrastructure
-   docker compose up --build -d
-   ```
-
-4. **Verify Running Containers:**
-   ```bash
-   docker compose ps
-   ```
-   You will see:
-   - `scholarforge-db` (Port 5432 - Healthy)
-   - `scholarforge-backend` (Port 8000)
-   - `scholarforge-frontend` (Port 3000)
-
-5. **Access Application:**
-   - **Frontend SaaS Web Application:** [http://localhost:3000](http://localhost:3000)
-   - **Backend REST API:** [http://localhost:8000/api/v1/health/](http://localhost:8000/api/v1/health/)
-   - **Django Administration:** [http://localhost:8000/admin/](http://localhost:8000/admin/)
-
----
-
-## 💻 Running Locally Without Docker (Direct Host)
-
-### 1. Backend Setup
+### 2. Backend (Django, port 8000)
+Windows (PowerShell):
 ```bash
 cd backend
 python -m venv venv
@@ -182,45 +164,170 @@ python -m venv venv
 pip install -r requirements.txt
 python manage.py migrate
 python manage.py seed_disciplines
+python manage.py createsuperuser
 python manage.py runserver 127.0.0.1:8000
 ```
+On macOS/Linux, activate the virtualenv with `source venv/bin/activate` instead.
 
-### 2. Frontend Setup
+Check it is up: [http://127.0.0.1:8000/api/v1/health/](http://127.0.0.1:8000/api/v1/health/). The Django admin is at [http://127.0.0.1:8000/admin/](http://127.0.0.1:8000/admin/).
+
+### 3. Frontend (Next.js, port 3000)
+In a second terminal:
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:3000](http://localhost:3000). The frontend calls the API at `NEXT_PUBLIC_API_URL` (default `http://127.0.0.1:8000`).
+
+### 4. Automated tests
+
+| Suite | Command (from the folder shown) | Notes |
+| :--- | :--- | :--- |
+| Backend unit/API tests: 189 tests, ~6 min | `backend`: `.\venv\Scripts\pytest` | Uses the database from `.env`. Uploads/exports go to a temp folder. The AI writing assistant runs in mock mode unless `AI_MOCK_MODE` is set. |
+| Run one backend file | `backend`: `.\venv\Scripts\pytest tests/test_project_access_control.py` | Role/permission tests |
+| Frontend component tests: 53 tests | `frontend`: `npm run test` | Vitest + Testing Library, API calls mocked |
+| Type check | `frontend`: `npx tsc --noEmit` | Must report no errors |
+| Production build | `frontend`: `npm run build` | |
+| End-to-end browser tests | `frontend`: `npx playwright install chromium` once, then `npm run test:e2e` | Backend **and** frontend must both be running on ports 8000 and 3000 |
+
+`pytest.ini` uses `--reuse-db`. After changing models or migrations, run `pytest --create-db` once.
+
+### 5. Manual smoke test
+After both servers are running, check the main flows in the browser:
+
+1. **Register and log in.** Then create a project through the setup wizard on `/research/create`.
+2. **Write.** Open the project, type in a section, and confirm autosave. Run an AI writing action; in mock mode it returns a clearly labelled mock suggestion.
+3. **Library.** On `/library`, search for papers. This needs internet access to OpenAlex, Crossref and Semantic Scholar. Attach a source to the project and insert a citation.
+4. **Data.** Upload a small CSV dataset and run a descriptive statistics or t-test analysis.
+5. **Collaboration.** Register a second account. There is no invitation-acceptance page or email yet, so add that account to the project directly: in the Django admin, go to **Research → Project collaborators → Add** and choose role `VIEWER`. Log in as that account. Confirm it can open the project but cannot edit sections. Change the role to `CO_AUTHOR` and confirm editing now works.
+6. **Export.** Export to DOCX and PDF, then download both files. Generated files land in `backend/media/exports/`.
 
 ---
 
-## 🧪 Automated Testing & Verification
+## 🚧 What's Left To Be Done
 
-### Run Backend Pytest Suite (189 tests across 11 files)
-```bash
-cd backend
-.\venv\Scripts\pytest -v
-```
+This list comes from a code review on 2026-11-10. Items are grouped by impact.
 
-### Run Frontend Vitest Suite (53 tests across 7 files)
-```bash
-cd frontend
-npm run test
-```
+### Blocks deployment
+| # | Gap | Where |
+| :-: | :--- | :--- |
+| 1 | **Frontend Docker image does not build.** The Dockerfile copies `.next/standalone` and `public/`, but `next.config.mjs` lacks `output: 'standalone'` and `frontend/public/` does not exist. | `infrastructure/frontend.Dockerfile`, `frontend/next.config.mjs` |
+| 2 | **Backend runs Django's dev server** (`runserver`) in the container. There is no Gunicorn, no static-file serving (the admin is unstyled when `DEBUG=False`), and no `collectstatic`. | `infrastructure/backend.Dockerfile`, `docker-compose.yml` |
+| 3 | **Production security settings are hard-coded or tied to `DEBUG`.** `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` only allow localhost. Cookie `Secure` flags follow `DEBUG`; the `SESSION_COOKIE_SECURE` / `CSRF_COOKIE_SECURE` lines in `.env.example` are never read. `SECRET_KEY` falls back to a public default. There is no HTTPS redirect, HSTS or proxy-SSL header. | `backend/scholarforge/settings.py` |
+| 4 | **`NEXT_PUBLIC_API_URL` is baked in at build time.** Compose sets it only at runtime, and to `http://backend:8000`, which a browser cannot reach. | `docker-compose.yml`, `frontend/src/lib/api.ts` |
+| 5 | **No email delivery.** `EMAIL_BACKEND` is the console backend, so password-reset emails are never sent. Collaborator invitations create a token but send no email. | `settings.py`, `research/collaboration_service.py` |
 
-### Run Playwright E2E Browser Tests
-```bash
-cd frontend
-node ./node_modules/@playwright/test/cli.js test
-```
+### Missing or incomplete features
+- **No invitation-acceptance page.** The API (`/api/v1/research/collaborations/invitations/<token>/accept/`) and `collaborationApi.acceptInvitation` exist, but no page calls them.
+- **Most "AI" features use built-in templates, not a language model.** Only the writing assistant (`research/ai_service.py`) calls OpenAI. Literature intelligence, the AI review assistant, results interpretation and supervisor-feedback correction analysis produce deterministic text.
+- **Section scoping is not enforced.** `ProjectCollaborator.assigned_sections` is stored but ignored by the access policy.
+- **Exports run inside the HTTP request.** There is no worker queue, so large documents can hit proxy timeouts. Moving export jobs to Celery/RQ would fix this.
+- **Mock-mode switches are inconsistent.** Discovery, verification and literature services read `AI_MOCK_MODE` themselves (default `False`), unlike the writing assistant.
 
-### TypeScript Validation & Production Build
-```bash
-cd frontend
-npx tsc --noEmit
-npm run build
+### Operational hygiene
+- No rate limiting on login, registration or AI endpoints (DRF throttling not configured).
+- No `LOGGING` configuration, error tracking (e.g. Sentry) or health checks beyond `/api/v1/health/`.
+- No CI pipeline. Tests, type check and build only run manually.
+- Uploads and exports live on the local filesystem. Running more than one backend instance needs shared or object storage.
+- Housekeeping:
+  - `requirements.txt` mixes runtime and test dependencies.
+  - `frontend/tsconfig.tsbuildinfo` is committed.
+  - Line endings are mixed (add a `.gitattributes`).
+
+---
+
+## 🌐 Getting It Deployment-Ready
+
+Work through these steps in order. Steps 1–4 fix the blockers above; steps 5–7 harden the system for real users.
+
+### 1. Make backend settings environment-driven
+In `backend/scholarforge/settings.py`:
+```python
+DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1', 'yes')
+SECRET_KEY = os.environ['DJANGO_SECRET_KEY'] if not DEBUG else os.environ.get('DJANGO_SECRET_KEY', 'dev-only-key')
+
+def env_list(name, default=''):
+    return [v.strip() for v in os.environ.get(name, default).split(',') if v.strip()]
+
+CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000')
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000')
+
+SESSION_COOKIE_SECURE = CSRF_COOKIE_SECURE = not DEBUG
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+
+EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = True
 ```
+Then run `python manage.py check --deploy` with production env vars and resolve every warning.
+
+### 2. Serve the backend properly
+- Add `gunicorn` and `whitenoise` to `requirements.txt`. Insert `whitenoise.middleware.WhiteNoiseMiddleware` right after `SecurityMiddleware`.
+- In `backend.Dockerfile`, add `RUN python manage.py collectstatic --noinput`. Change the command to:
+  ```
+  gunicorn scholarforge.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120
+  ```
+- Run `migrate` and `seed_disciplines` as a one-off release step, not on every container start.
+
+### 3. Fix the frontend image
+- Add `output: 'standalone'` to `frontend/next.config.mjs`.
+- Create `frontend/public/` (a favicon is enough), or remove the `COPY ... /app/public` line.
+- Pass the API URL as a build argument:
+  ```dockerfile
+  ARG NEXT_PUBLIC_API_URL
+  ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+  ```
+  Set it in compose under `build.args` to the public HTTPS URL of the API.
+
+### 4. Choose a domain layout that keeps session cookies working
+Auth uses `SameSite=Lax` session and CSRF cookies, and the browser calls the API directly. The frontend and API must therefore be **same-site**. Two layouts work:
+- **One domain, recommended.** A reverse proxy (Caddy or nginx) serves `https://app.example.com`. It routes `/api/` and `/admin/` to Django and everything else to Next.js. Set `NEXT_PUBLIC_API_URL=https://app.example.com`.
+- **Sibling subdomains.** Use `app.example.com` (frontend) and `api.example.com` (backend). List the frontend origin in `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
+
+Hosting the frontend and API on unrelated domains (e.g. `*.vercel.app` + `*.onrender.com`) breaks login.
+
+### 5. Data, files and secrets
+- **Database.** Use managed PostgreSQL 16 with automated daily backups.
+- **Files.** Point `DJANGO_MEDIA_ROOT` at a persistent volume (already wired in `docker-compose.yml`). Back that volume up too. For multiple instances, switch to object storage (`django-storages` + S3/R2/GCS).
+- **Secrets.** Required environment variables in production:
+
+  | Area | Variables |
+  | :--- | :--- |
+  | Django | `DJANGO_SECRET_KEY` (new, random), `DJANGO_DEBUG=False`, `DJANGO_ALLOWED_HOSTS` |
+  | Cross-origin | `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `FRONTEND_URL` |
+  | Database | `POSTGRES_*` |
+  | Files | `DJANGO_MEDIA_ROOT` |
+  | Email | `EMAIL_*` |
+  | AI | `OPENAI_API_KEY`, `AI_MOCK_MODE=False`, optional `SEMANTIC_SCHOLAR_API_KEY` |
+
+  Never commit `.env`.
+
+### 6. Reliability and abuse protection
+- Configure DRF throttling: `DEFAULT_THROTTLE_CLASSES` / `DEFAULT_THROTTLE_RATES`, with stricter scopes on auth and AI endpoints.
+- Add `LOGGING` to stdout and error tracking (Sentry).
+- Point an uptime monitor at `/api/v1/health/`.
+- Move export generation to a background worker before inviting heavy users.
+
+### 7. Release checklist
+Run before every deploy, ideally in a GitHub Actions workflow on each push:
+```bash
+cd backend && pytest
+```
+```bash
+cd frontend && npm ci && npx tsc --noEmit && npm run test && npm run build
+```
+```bash
+cd backend && python manage.py check --deploy && python manage.py makemigrations --check --dry-run
+```
+After deploying, repeat the [manual smoke test](#5-manual-smoke-test) against the live URL with a test account.
 
 ---
 
