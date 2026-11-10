@@ -12,6 +12,7 @@ import { TableRow } from '@tiptap/extension-table-row';
 import { TableHeader } from '@tiptap/extension-table-header';
 import { TableCell } from '@tiptap/extension-table-cell';
 import CharacterCount from '@tiptap/extension-character-count';
+import { Lock as LockIcon } from 'lucide-react';
 
 import {
   Bold,
@@ -65,6 +66,9 @@ interface AcademicEditorProps {
   onGenerateBibliography?: () => void;
   onAddComment?: (selection: { text: string; start: number; end: number }) => void;
   editorRef?: React.MutableRefObject<AcademicEditorHandle | null>;
+  /** When true the section is shown but cannot be edited (role or section scope). */
+  readOnly?: boolean;
+  readOnlyReason?: string;
 }
 
 export default function AcademicEditor({
@@ -84,10 +88,13 @@ export default function AcademicEditor({
   onGenerateBibliography,
   onAddComment,
   editorRef,
+  readOnly = false,
+  readOnlyReason,
 }: AcademicEditorProps) {
   const [isFullScreen, setIsFullScreen] = useState(false);
 
   const editor = useEditor({
+    editable: !readOnly,
     extensions: [
       StarterKit.configure({
         heading: {
@@ -136,6 +143,12 @@ export default function AcademicEditor({
       onChangeContent(html, words);
     },
   });
+
+  useEffect(() => {
+    if (editor && editor.isEditable === readOnly) {
+      editor.setEditable(!readOnly);
+    }
+  }, [editor, readOnly]);
 
   // Keep editor content in sync when switching sections
   useEffect(() => {
@@ -487,6 +500,16 @@ export default function AcademicEditor({
           </button>
         )}
       </div>
+
+      {readOnly && (
+        <div
+          role="status"
+          className="flex items-center gap-2 px-6 py-2 text-xs font-medium bg-amber-50 border-b border-amber-200 text-amber-800"
+        >
+          <LockIcon className="w-3.5 h-3.5 shrink-0" />
+          <span>{readOnlyReason || 'This section is read-only for your role.'}</span>
+        </div>
+      )}
 
       {/* Editor Content Area */}
       <div className="flex-1 overflow-y-auto bg-white">

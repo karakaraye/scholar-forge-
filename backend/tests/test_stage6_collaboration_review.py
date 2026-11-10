@@ -139,11 +139,13 @@ class TestCollaborationAndInvitations:
             {
                 "email": "supervisor@university.edu",
                 "role": "SUPERVISOR",
-                "assigned_sections": ["1. Introduction and Background"],
+                # Sections are assigned by ID (titles are not unique and are rejected).
+                "assigned_sections": [str(auth_setup["sec1"].id)],
             },
             format="json",
         )
         assert res.status_code == status.HTTP_201_CREATED
+        assert res.data["assigned_sections"] == [str(auth_setup["sec1"].id)]
         assert res.data["invitee_email"] == "supervisor@university.edu"
         assert res.data["role"] == "SUPERVISOR"
         assert res.data["status"] == "PENDING"

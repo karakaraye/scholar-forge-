@@ -2,11 +2,19 @@
 Export Job Service for ScholarForge AI.
 Coordinates asynchronous export jobs, private file storage, idempotency,
 and orchestrates DocumentIR, DocxExportService, PdfExportService, and ExportQAService.
+
+Execution modes (settings.EXPORT_JOB_MODE):
+  * 'sync'   - the job is rendered inside the HTTP request (development and tests).
+  * 'worker' - the request only queues a PENDING job; `python manage.py run_export_worker`
+               claims and renders queued jobs in a separate process.
 """
+import logging
 import os
 import uuid
+from datetime import timedelta
 from typing import Dict, Any, Optional
 from django.conf import settings
+from django.db import close_old_connections
 from django.utils import timezone
 from django.core.files import File
 
@@ -25,6 +33,8 @@ from research.document_ir import DocumentIRBuilder, DocumentIR
 from research.docx_export_service import DocxExportService
 from research.pdf_export_service import PdfExportService
 from research.export_qa_service import ExportQAService
+
+logger = logging.getLogger(__name__)
 
 
 class ExportJobService:
@@ -68,13 +78,23 @@ class ExportJobService:
             if assignment:
                 template = assignment.template
 
+        # A document version from another project must never be rendered into this export.
+        if document_version_id and not DocumentVersion.objects.filter(
+            id=document_version_id, document__project=project
+        ).exists():
+            document_version_id = None
+
+        queued = settings.EXPORT_JOB_MODE == 'worker'
         job = ExportJob.objects.create(
             project=project,
             export_format=format_val,
             template=template,
             status=ExportJobStatus.PENDING,
             progress_pct=5,
-            status_message="Export job queued for processing.",
+            status_message=(
+                "Export queued. A background worker will start rendering shortly."
+                if queued else "Export job queued for processing."
+            ),
             idempotency_key=idempotency_key or str(uuid.uuid4()),
             created_by=user,
             export_options={
@@ -83,9 +103,62 @@ class ExportJobService:
             }
         )
 
-        # Execute job
-        cls.process_job(job)
+        if not queued:
+            cls.process_job(job)
         return job
+
+    # ------------------------------------------------------------------
+    # Background worker support
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def claim_job(cls, job_id) -> Optional[ExportJob]:
+        """
+        Atomically moves a PENDING job to PROCESSING. Returns the job if this caller won the
+        claim, None if another worker got there first. Works on every database backend.
+        """
+        claimed = ExportJob.objects.filter(pk=job_id, status=ExportJobStatus.PENDING).update(
+            status=ExportJobStatus.PROCESSING,
+            progress_pct=10,
+            status_message="Rendering started by background worker...",
+            updated_at=timezone.now(),
+        )
+        if not claimed:
+            return None
+        return ExportJob.objects.select_related('project', 'template', 'created_by').get(pk=job_id)
+
+    @classmethod
+    def fail_stale_jobs(cls) -> int:
+        """Marks jobs stuck in PROCESSING/VALIDATING (e.g. a crashed worker) as FAILED."""
+        cutoff = timezone.now() - timedelta(minutes=settings.EXPORT_JOB_STALE_MINUTES)
+        return ExportJob.objects.filter(
+            status__in=[ExportJobStatus.PROCESSING, ExportJobStatus.VALIDATING],
+            updated_at__lt=cutoff,
+        ).update(
+            status=ExportJobStatus.FAILED,
+            status_message="Export timed out: the worker stopped before finishing. Please try again.",
+            error_message="Stale job reclaimed by export worker.",
+            updated_at=timezone.now(),
+        )
+
+    @classmethod
+    def run_pending_jobs(cls, limit: int = 10) -> int:
+        """Claims and renders up to `limit` queued jobs, oldest first. Returns how many ran."""
+        processed = 0
+        pending_ids = list(
+            ExportJob.objects.filter(status=ExportJobStatus.PENDING)
+            .order_by('created_at')
+            .values_list('id', flat=True)[:limit]
+        )
+        for job_id in pending_ids:
+            job = cls.claim_job(job_id)
+            if job is None:
+                continue
+            logger.info("Export worker rendering job %s (%s)", job.id, job.export_format)
+            cls.process_job(job)
+            processed += 1
+            close_old_connections()
+        return processed
 
     @classmethod
     def process_job(cls, job: ExportJob):
@@ -105,7 +178,9 @@ class ExportJobService:
 
             doc_version = None
             if doc_version_id:
-                doc_version = DocumentVersion.objects.filter(id=doc_version_id).first()
+                doc_version = DocumentVersion.objects.filter(
+                    id=doc_version_id, document__project=project
+                ).first()
 
             # 1. Build Canonical DocumentIR
             ir = DocumentIRBuilder.build_ir(
@@ -184,6 +259,7 @@ class ExportJobService:
             job.save(update_fields=['document_export', 'status', 'progress_pct', 'status_message', 'updated_at'])
 
         except Exception as e:
+            logger.exception("Export job %s failed", job.id)
             job.status = ExportJobStatus.FAILED
             job.error_message = str(e)
             job.status_message = f"Document export failed: {str(e)}"

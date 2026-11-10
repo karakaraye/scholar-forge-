@@ -82,27 +82,121 @@ class ReviewService:
             }
 
         # Dispatch Task Handlers
+        target_sec = None
         if task_type == "SUGGEST_ABSTRACT":
-            return cls._handle_suggest_abstract(project, sections, stat_results, hypo_tests)
+            result = cls._handle_suggest_abstract(project, sections, stat_results, hypo_tests)
         elif task_type == "SUGGEST_CONCLUSION":
-            return cls._handle_suggest_conclusion(project, sections, hypo_tests, stat_results)
+            result = cls._handle_suggest_conclusion(project, sections, hypo_tests, stat_results)
         elif task_type == "REVIEW_CHAPTER":
             target_sec = section_map.get(section_id) if section_id else (sections[0] if sections else None)
-            return cls._handle_review_chapter(project, target_sec)
+            result = cls._handle_review_chapter(project, target_sec)
         elif task_type == "CHECK_RESEARCH_ALIGNMENT":
-            return cls._handle_review_alignment(project, sections, hypo_tests)
+            result = cls._handle_review_alignment(project, sections, hypo_tests)
         elif task_type == "IDENTIFY_MISSING_SECTIONS":
-            return cls._handle_missing_sections(project, sections)
+            result = cls._handle_missing_sections(project, sections)
         elif task_type == "REVIEW_ARGUMENT_COHERENCE":
-            return cls._handle_argument_coherence(project, sections)
+            result = cls._handle_argument_coherence(project, sections)
         elif task_type == "REVIEW_LITERATURE_INTEGRATION":
-            return cls._handle_literature_integration(project, sections, sources)
+            result = cls._handle_literature_integration(project, sections, sources)
         elif task_type == "REVIEW_RESULTS_DISCUSSION":
-            return cls._handle_results_discussion(project, sections, stat_results, hypo_tests)
+            result = cls._handle_results_discussion(project, sections, stat_results, hypo_tests)
         elif task_type == "PREPARE_REVIEW_CHECKLIST":
-            return cls._handle_review_checklist(project, sections, sources, stat_results)
+            result = cls._handle_review_checklist(project, sections, sources, stat_results)
         else:  # REVIEW_FULL_MANUSCRIPT
-            return cls._handle_full_manuscript_review(project, sections, sources, stat_results, hypo_tests)
+            result = cls._handle_full_manuscript_review(project, sections, sources, stat_results, hypo_tests)
+
+        return cls._apply_language_model(
+            task_type, result, project=project,
+            sections=[target_sec] if target_sec is not None else sections,
+            stat_results=stat_results, hypo_tests=hypo_tests, sources=sources,
+            user_prompt=user_prompt,
+        )
+
+    # --- Language-model enrichment ---
+
+    LLM_TASK_INSTRUCTIONS = {
+        "REVIEW_FULL_MANUSCRIPT": "Act as a rigorous examiner. Give an overall assessment, then strengths, major concerns and minor concerns, each tied to specific sections.",
+        "REVIEW_CHAPTER": "Review this chapter in depth: argument quality, structure, evidence use, academic tone, and concrete revisions.",
+        "CHECK_RESEARCH_ALIGNMENT": "Check alignment between the problem, objectives, research questions, hypotheses, methods and results. List each misalignment and how to fix it.",
+        "IDENTIFY_MISSING_SECTIONS": "Identify sections or elements a manuscript of this type and discipline is expected to contain but that are missing or underdeveloped.",
+        "REVIEW_ARGUMENT_COHERENCE": "Assess the logical flow of the argument across sections: transitions, unsupported leaps, repetition and contradictions.",
+        "REVIEW_LITERATURE_INTEGRATION": "Assess how well the literature is synthesised and used to build the argument (not merely summarised), referring only to the listed sources.",
+        "REVIEW_RESULTS_DISCUSSION": "Check that the results are reported correctly against the computed statistics and that the discussion interprets them without over-claiming or implying causation.",
+        "SUGGEST_ABSTRACT": "Write a 200-250 word abstract (background, aim, method, results, conclusion) using only what the manuscript and computed results show. Leave a bracketed placeholder for anything not yet available.",
+        "SUGGEST_CONCLUSION": "Draft a conclusion section summarising answers to the research questions, contributions, recommendations and future research, grounded only in the supplied results.",
+        "PREPARE_REVIEW_CHECKLIST": "Produce a pre-submission/defence readiness checklist as a Markdown checklist, marking each item as met, partly met or not met based on the evidence.",
+    }
+
+    @staticmethod
+    def _plain_text(html: str) -> str:
+        import re as _re
+        text = _re.sub(r"<[^>]+>", " ", html or "")
+        return _re.sub(r"\s+", " ", text).strip()
+
+    @classmethod
+    def _apply_language_model(cls, task_type, result, *, project, sections, stat_results, hypo_tests,
+                              sources, user_prompt) -> Dict[str, Any]:
+        """
+        Adds `ai_review` (model-written narrative from the real manuscript text and results) when a
+        model is configured. The deterministic findings are always kept; any failure is ignored.
+        """
+        from research.llm_client import complete
+
+        if not isinstance(result, dict) or result.get("refusal"):
+            return result
+
+        section_texts = []
+        budget = 18000
+        for sec in sections:
+            if sec is None:
+                continue
+            text = cls._plain_text(sec.content)[:4000]
+            if not text:
+                continue
+            section_texts.append({"title": sec.title, "word_count": sec.word_count, "text": text})
+            budget -= len(text)
+            if budget <= 0:
+                break
+
+        evidence = {
+            "project": {
+                "title": project.title,
+                "discipline": project.discipline.name if project.discipline else None,
+                "document_category": project.document_category,
+                "academic_level": project.academic_level,
+            },
+            "manuscript_sections": section_texts,
+            "computed_statistical_results": [
+                {"analysis": r.analysis_type, "n": r.sample_size, "metrics": r.metrics} for r in stat_results[:15]
+            ],
+            "hypothesis_tests": [
+                {"hypothesis": h.hypothesis_text, "test": h.test_type, "decision": h.decision,
+                 "statistic": h.test_statistic_value, "p_value": h.p_value, "effect_size": h.effect_size}
+                for h in hypo_tests[:15]
+            ],
+            "project_sources": [
+                {"title": ps.source.title, "authors": list(ps.source.authors or [])[:4], "year": ps.source.publication_year}
+                for ps in sources[:40]
+            ],
+            "automated_checks": {k: v for k, v in result.items() if k not in ("task_type",)},
+        }
+        instructions = "\n".join(filter(None, [
+            "You are an experienced academic supervisor reviewing a research manuscript.",
+            cls.LLM_TASK_INSTRUCTIONS.get(task_type, "Review the manuscript."),
+            "Write in Markdown. Be specific and constructive; refer to sections by title.",
+            f"Researcher's additional request: {user_prompt}" if user_prompt else "",
+        ]))
+        llm = complete(instructions, evidence, max_tokens=1800)
+        result = dict(result)
+        if llm is None:
+            result.setdefault("generated_by", "deterministic-template")
+            return result
+        result["ai_review"] = llm.text
+        result["generated_by"] = llm.model
+        if task_type == "SUGGEST_ABSTRACT":
+            result["template_narrative_abstract"] = result.get("narrative_abstract")
+            result["narrative_abstract"] = llm.text
+        return result
 
     # --- Task Implementations ---
 

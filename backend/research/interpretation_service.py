@@ -112,6 +112,15 @@ class InterpretationService:
             literature_sources=literature_sources or [],
             user_prompt=user_prompt
         )
+        result_payload = cls._apply_language_model(
+            task_type,
+            result_payload,
+            project_context=project_context,
+            statistical_results=statistical_results or [],
+            qualitative_themes=qualitative_themes or [],
+            literature_sources=literature_sources or [],
+            user_prompt=user_prompt,
+        )
 
         return {
             "success": True,
@@ -119,6 +128,54 @@ class InterpretationService:
             "task_type": task_type,
             "data": result_payload
         }
+
+    LLM_TASK_INSTRUCTIONS = {
+        "INTERPRET_DESCRIPTIVE_RESULTS": "Interpret the descriptive statistics in APA style: central tendency, spread and distribution shape for each variable.",
+        "INTERPRET_CORRELATION_RESULTS": "Interpret each correlation: direction, strength (Cohen's conventions), significance at alpha = .05, and an explicit reminder that correlation is not causation.",
+        "INTERPRET_REGRESSION_RESULTS": "Interpret the regression model(s): overall fit (R-squared, F), each predictor's coefficient, significance and confidence interval, and any multicollinearity warnings.",
+        "INTERPRET_HYPOTHESIS_TESTS": "For each test, state the hypothesis decision (reject / fail to reject the null), the test statistic, p-value and effect size, in APA reporting style.",
+        "SUMMARIZE_QUALITATIVE_THEMES": "Summarise each qualitative theme with its description and how the codes/excerpts support it. Quote excerpts only verbatim from the evidence.",
+        "EXPLAIN_STATISTICAL_ASSUMPTIONS": "Explain which statistical assumptions apply to the tests run and what the supplied diagnostics say about whether they were met. Say when a diagnostic is not available.",
+        "GENERATE_RESULTS_SECTION": "Draft a Results chapter section (Chapter Four style) with subheadings, reporting every supplied result in APA style. Report results only; no discussion of literature.",
+        "GENERATE_DISCUSSION_SECTION": "Draft a Discussion section that interprets the supplied results, relates them to the supplied literature list only, and states implications and limitations.",
+        "COMPARE_FINDINGS_WITH_LITERATURE": "Compare the supplied findings with the supplied literature list: which studies they agree or disagree with and why. Use only the listed studies as references.",
+        "SUGGEST_LIMITATIONS_FUTURE_RESEARCH": "Write a limitations and future-research section grounded in the supplied design, results and themes.",
+    }
+
+    @classmethod
+    def _apply_language_model(cls, task_type, payload, *, project_context, statistical_results,
+                              qualitative_themes, literature_sources, user_prompt) -> Dict[str, Any]:
+        """
+        When a language model is configured, rewrites the narrative from the same computed results.
+        The deterministic text is kept as `template_content`; on any failure the payload is unchanged.
+        """
+        from research.llm_client import complete
+
+        instructions = "\n".join(filter(None, [
+            "You are interpreting computed research results for an academic manuscript.",
+            cls.LLM_TASK_INSTRUCTIONS.get(task_type, "Interpret the supplied results."),
+            f"Discipline: {project_context.get('discipline')}. Project: {project_context.get('title')}.",
+            "Write in formal academic English, in Markdown.",
+            f"Researcher's additional request: {user_prompt}" if user_prompt else "",
+        ]))
+        evidence = {
+            "computed_statistical_results": statistical_results,
+            "qualitative_themes": qualitative_themes,
+            "literature_list": literature_sources,
+            "deterministic_draft": payload.get("content") if isinstance(payload, dict) else None,
+        }
+        result = complete(instructions, evidence, max_tokens=1800)
+        if result is None or not isinstance(payload, dict):
+            if isinstance(payload, dict):
+                payload.setdefault("generated_by", "deterministic-template")
+            return payload
+
+        payload = dict(payload)
+        if "content" in payload:
+            payload["template_content"] = payload["content"]
+        payload["content"] = result.text
+        payload["generated_by"] = result.model
+        return payload
 
     # --- Task Generators ---
 

@@ -16,6 +16,7 @@ import {
   AIAction,
   AIGenerateResponse,
   ResearchSource,
+  CollaboratorRole,
 } from '@/types/project';
 import { formatDate } from '@/lib/utils';
 import Sidebar from '@/components/Sidebar';
@@ -317,7 +318,43 @@ export default function ResearchWorkspacePage() {
   );
 
   // Editor content change with debounced autosave (1.5 seconds)
+  // Mirrors the backend access policy so out-of-scope sections are read-only in the UI.
+  const sectionEditBlockReason = (section: DocumentSection | null): string | null => {
+    if (!section || !project) return null;
+    const caps = project.capabilities;
+    if (caps && !caps.includes('edit')) {
+      return 'Your role on this project is read-only for manuscript text. You can still read and comment.';
+    }
+    const scope = project.assigned_sections;
+    if (scope && scope.length > 0) {
+      const byId = new Map(sections.map((s) => [s.id, s]));
+      let current: DocumentSection | undefined = section;
+      for (let hops = 0; current && hops < 32; hops += 1) {
+        if (scope.includes(current.id)) return null;
+        current = current.parent_section ? byId.get(current.parent_section) : undefined;
+      }
+      return 'This section is outside the chapters assigned to you, so it is read-only.';
+    }
+    return null;
+  };
+  const selectedSectionBlockReason = sectionEditBlockReason(selectedSection);
+
+  // Role label used by collaboration panels to show or hide management/approval controls.
+  // The backend enforces the real rules; this only keeps the UI consistent with them.
+  const uiRole: CollaboratorRole = (() => {
+    const caps = project?.capabilities;
+    if (!caps) return 'PROJECT_OWNER';
+    if (caps.includes('manage')) return 'PROJECT_OWNER';
+    if (caps.includes('approve')) return 'SUPERVISOR';
+    const role = project?.current_user_role;
+    if (role && role !== 'WORKSPACE_MEMBER') return role;
+    if (caps.includes('edit')) return 'CO_AUTHOR';
+    if (caps.includes('comment')) return 'ACADEMIC_REVIEWER';
+    return 'VIEWER';
+  })();
+
   const handleEditorChange = (html: string, wordCount: number) => {
+    if (selectedSectionBlockReason) return;
     setEditorContent(html);
     setSaveStatus('unsaved');
 
@@ -1031,6 +1068,8 @@ export default function ResearchWorkspacePage() {
                       onGenerateBibliography={handleGenerateBibliography}
                       onAddComment={handleAddCommentSelection}
                       editorRef={editorRef}
+                      readOnly={selectedSectionBlockReason !== null}
+                      readOnlyReason={selectedSectionBlockReason ?? undefined}
                     />
                   ) : (
                     <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center shadow-sm">
@@ -1180,7 +1219,8 @@ export default function ResearchWorkspacePage() {
             {activeWorkspaceTab === 'collaborators' && (
               <CollaboratorsManager
                 projectId={projectId}
-                currentUserRole={(project as any)?.role || 'PROJECT_OWNER'}
+                currentUserRole={uiRole}
+                sections={sections.map((s) => ({ id: s.id, title: s.title, parentId: s.parent_section ?? null }))}
               />
             )}
 
@@ -1195,7 +1235,7 @@ export default function ResearchWorkspacePage() {
               <CorrectionTracker
                 projectId={projectId}
                 documentId={project.documents?.[0]?.id}
-                currentUserRole={(project as any)?.role || 'PROJECT_OWNER'}
+                currentUserRole={uiRole}
                 onSelectTaskSection={(secId) => {
                   if (secId) {
                     const sec = sections.find((s) => s.id === secId);

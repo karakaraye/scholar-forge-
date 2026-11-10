@@ -170,7 +170,12 @@ def execute_ai_task(
         }
 
 
-def call_openai_api(prompt: str, ai_settings: Dict[str, Any]) -> tuple[str, str]:
+def call_openai_api(
+    prompt: str,
+    ai_settings: Dict[str, Any],
+    system_prompt: Optional[str] = None,
+    json_mode: bool = False,
+) -> tuple[str, str]:
     """
     Communicates with OpenAI API using standard urllib/requests without requiring extra heavy SDKs.
     """
@@ -179,17 +184,19 @@ def call_openai_api(prompt: str, ai_settings: Dict[str, Any]) -> tuple[str, str]
 
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     model = ai_settings["model"]
-    url = "https://api.openai.com/v1/chat/completions"
+    url = os.environ.get("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
 
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ],
         "temperature": ai_settings["temperature"],
         "max_tokens": ai_settings["max_tokens"]
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
 
     req = urllib.request.Request(
         url,

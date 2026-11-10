@@ -84,6 +84,8 @@ from research.views import (
     ProjectCollaboratorsView,
     CollaboratorDetailView,
     ProjectInvitationActionView,
+    MyInvitationsView,
+    InvitationDetailView,
     ProjectInvitationRevokeView,
     ProjectCollaborationAuditView,
     ManuscriptCommentsView,
@@ -235,6 +237,8 @@ urlpatterns = [
     # =========================================================================
     path('projects/<uuid:project_id>/collaborators/', ProjectCollaboratorsView.as_view(), name='project-collaborators'),
     path('projects/<uuid:project_id>/collaborators/<uuid:collaborator_id>/', CollaboratorDetailView.as_view(), name='collaborator-detail'),
+    path('collaborations/invitations/', MyInvitationsView.as_view(), name='my-invitations'),
+    path('collaborations/invitations/<str:token>/', InvitationDetailView.as_view(), name='invitation-detail'),
     path('collaborations/invitations/<str:token>/<str:action>/', ProjectInvitationActionView.as_view(), name='invitation-action'),
     path('projects/<uuid:project_id>/invitations/<uuid:invitation_id>/', ProjectInvitationRevokeView.as_view(), name='invitation-revoke'),
     path('projects/<uuid:project_id>/collaborators-audit/', ProjectCollaborationAuditView.as_view(), name='project-collaborators-audit'),

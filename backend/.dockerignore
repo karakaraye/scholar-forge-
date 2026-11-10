@@ -1,0 +1,16 @@
+venv/
+.venv/
+env/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+db.sqlite3
+db.sqlite3-journal
+media/
+uploads/
+exports/
+scratch/
+staticfiles/
+test_*.pdf
+.env
+*.env

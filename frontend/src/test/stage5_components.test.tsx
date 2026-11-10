@@ -219,15 +219,14 @@ vi.mock('@/lib/api', () => ({
   reviewAssistantApi: {
     execute: vi.fn().mockImplementation((projId, payload) => {
       if (payload.task_type === 'SUGGEST_ABSTRACT') {
+        // Shape returned by POST /projects/<id>/ai-review/ (ReviewService payload)
         return Promise.resolve({
-          success: true,
-          refusal: false,
-          message: 'Structured abstract generated successfully from empirical evidence.',
-          data: {
-            abstract_structured: {
-              background: 'Investigates digital financial inclusivity...',
-              results: 'Significant positive relationship found.',
-            },
+          task_type: 'SUGGEST_ABSTRACT',
+          ai_review: 'Structured abstract generated successfully from empirical evidence.',
+          generated_by: 'gpt-4o-mini',
+          abstract_structured: {
+            background: 'Investigates digital financial inclusivity...',
+            results: 'Significant positive relationship found.',
           },
         });
       }

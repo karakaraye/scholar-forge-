@@ -103,6 +103,86 @@ def require_project_access(user, project, capability=VIEW):
     return project
 
 
+# ---------------------------------------------------------------------------
+# Section scoping (ProjectCollaborator.assigned_sections)
+#
+# A collaborator whose `assigned_sections` is non-empty may still READ the whole
+# manuscript, but may only edit, comment on, or raise corrections against the
+# assigned sections and their subsections. Manuscript-wide operations (restore,
+# reorder, apply template, auto-format) need an unscoped role. Owners and
+# workspace members are never section-scoped.
+# ---------------------------------------------------------------------------
+
+def get_section_scope(user, project):
+    """
+    Returns None when the user is not section-scoped on `project`, otherwise the
+    frozenset of section-ID strings they may write to.
+    """
+    if project is None or not user or not getattr(user, 'is_authenticated', False):
+        return frozenset()
+    if project.owner_id == user.pk:
+        return None
+    if project.workspace_id:
+        WorkspaceMembership = apps.get_model('workspaces', 'WorkspaceMembership')
+        if WorkspaceMembership.objects.filter(workspace_id=project.workspace_id, user=user).exists():
+            return None
+    ProjectCollaborator = apps.get_model('research', 'ProjectCollaborator')
+    assigned = (
+        ProjectCollaborator.objects
+        .filter(project=project, user=user, is_active=True)
+        .values_list('assigned_sections', flat=True)
+        .first()
+    )
+    if not assigned:
+        return None
+    return frozenset(str(section_id) for section_id in assigned)
+
+
+def section_in_scope(section, scope):
+    """True when `scope` is unrestricted or contains `section` or one of its ancestors."""
+    if scope is None:
+        return True
+    current, hops = section, 0
+    while current is not None and hops < 32:
+        if str(current.pk) in scope:
+            return True
+        current = current.parent_section
+        hops += 1
+    return False
+
+
+def has_section_access(user, section, capability=EDIT):
+    project = resolve_project(section)
+    if not has_project_access(user, project, capability):
+        return False
+    if capability == VIEW:
+        return True
+    return section_in_scope(section, get_section_scope(user, project))
+
+
+def require_section_access(user, section, capability=EDIT):
+    if not has_section_access(user, section, capability):
+        raise PermissionDenied(
+            'You can only change the manuscript sections assigned to you on this project.'
+        )
+    return section
+
+
+def has_full_manuscript_access(user, project, capability=EDIT):
+    """Capability on the project AND not limited to particular sections."""
+    if not has_project_access(user, project, capability):
+        return False
+    return capability == VIEW or get_section_scope(user, project) is None
+
+
+def require_full_manuscript_access(user, project, capability=EDIT):
+    if not has_full_manuscript_access(user, project, capability):
+        raise PermissionDenied(
+            'This action affects the whole manuscript and is not available to section-scoped collaborators.'
+        )
+    return project
+
+
 def accessible_projects_q(user, prefix=''):
     """Q filter matching projects the user owns, shares a workspace with, or actively collaborates on."""
     return (
@@ -124,11 +204,36 @@ def required_capability(request, view):
 
 
 class HasProjectAccess(permissions.BasePermission):
-    """Object-level permission enforcing the project capability required by the request."""
+    """
+    Object-level permission enforcing the project capability required by the request.
+
+    Section scoping: unsafe requests on a DocumentSection are limited to the requester's
+    assigned sections; unsafe requests on a whole ResearchDocument require an unscoped
+    role unless the view sets `allow_section_scoped_writes = True` and checks the
+    affected section itself.
+    """
+
+    message = 'You do not have permission to perform this action on this project.'
 
     def has_object_permission(self, request, view, obj):
         project = resolve_project(obj)
-        return has_project_access(request.user, project, required_capability(request, view))
+        capability = required_capability(request, view)
+        if not has_project_access(request.user, project, capability):
+            return False
+        if capability == VIEW:
+            return True
+
+        DocumentSection = apps.get_model('documents', 'DocumentSection')
+        ResearchDocument = apps.get_model('documents', 'ResearchDocument')
+        if isinstance(obj, DocumentSection):
+            if not section_in_scope(obj, get_section_scope(request.user, project)):
+                self.message = 'You can only change the manuscript sections assigned to you on this project.'
+                return False
+        elif isinstance(obj, ResearchDocument) and not getattr(view, 'allow_section_scoped_writes', False):
+            if get_section_scope(request.user, project) is not None:
+                self.message = 'This action affects the whole manuscript and is not available to section-scoped collaborators.'
+                return False
+        return True
 
 
 class RequiresProjectApproval(permissions.BasePermission):

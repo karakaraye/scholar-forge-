@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth, readNextParam } from '@/context/AuthContext';
 import { GraduationCap, Lock, Mail, AlertCircle, ArrowRight } from 'lucide-react';
 
 export default function LoginPage() {
@@ -18,7 +18,7 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      await login({ email, password });
+      await login({ email, password }, readNextParam());
     } catch (err: unknown) {
       if (err instanceof Error) {
         setError(err.message);

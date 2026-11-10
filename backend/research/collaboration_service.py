@@ -1,9 +1,12 @@
 import secrets
+import uuid
 from datetime import timedelta
 from django.utils import timezone
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.contrib.auth import get_user_model
+from documents.models import DocumentSection
 from projects.models import ResearchProject
+from scholarforge.emails import send_project_invitation_email
 from research.models import (
     ProjectCollaborator,
     CollaboratorRole,
@@ -58,6 +61,8 @@ class CollaborationService:
         if role not in CollaboratorRole.values:
             raise ValidationError(f"Invalid role '{role}'. Must be one of {CollaboratorRole.values}.")
 
+        assigned_sections = cls.normalize_assigned_sections(project, assigned_sections)
+
         # Check if already an active collaborator
         existing_user = User.objects.filter(email__iexact=invitee_email).first()
         if existing_user:
@@ -100,6 +105,55 @@ class CollaborationService:
             }
         )
 
+        invitation.email_sent = send_project_invitation_email(invitation)
+        return invitation
+
+    @staticmethod
+    def normalize_assigned_sections(project: ResearchProject, assigned_sections) -> list:
+        """
+        Validates that every assigned section ID belongs to one of the project's documents.
+        An empty list means the collaborator is not scoped to particular sections.
+        """
+        if not assigned_sections:
+            return []
+        if not isinstance(assigned_sections, (list, tuple)):
+            raise ValidationError("assigned_sections must be a list of section IDs.")
+
+        requested = []
+        for raw in assigned_sections:
+            try:
+                requested.append(str(uuid.UUID(str(raw))))
+            except (ValueError, TypeError):
+                raise ValidationError(f"'{raw}' is not a valid section ID.")
+
+        found = {
+            str(pk) for pk in DocumentSection.objects.filter(
+                document__project=project, id__in=requested
+            ).values_list('id', flat=True)
+        }
+        missing = [sid for sid in requested if sid not in found]
+        if missing:
+            raise ValidationError(f"Sections not found in this project: {', '.join(missing)}")
+        # De-duplicate while preserving order
+        return list(dict.fromkeys(requested))
+
+    @staticmethod
+    def get_invitation_for_user(token: str, user: User) -> ProjectInvitation:
+        """
+        Returns the invitation addressed to `user`. Unknown tokens and invitations for other
+        addresses both raise the same error so tokens cannot be probed.
+        """
+        invitation = (
+            ProjectInvitation.objects
+            .select_related('project', 'project__owner', 'invited_by')
+            .filter(token=token)
+            .first()
+        )
+        if not invitation or invitation.invitee_email.lower().strip() != user.email.lower().strip():
+            raise ValidationError("Invitation not found.")
+        if invitation.status == InvitationStatus.PENDING and invitation.is_expired:
+            invitation.status = InvitationStatus.EXPIRED
+            invitation.save(update_fields=['status'])
         return invitation
 
     @classmethod
@@ -155,8 +209,11 @@ class CollaborationService:
 
     @classmethod
     def reject_invitation(cls, token: str, user: User) -> ProjectInvitation:
+        if not user or not user.is_authenticated:
+            raise PermissionDenied("Authentication required to decline an invitation.")
+
         invitation = ProjectInvitation.objects.filter(token=token).first()
-        if not invitation:
+        if not invitation or invitation.invitee_email.lower().strip() != user.email.lower().strip():
             raise ValidationError("Invitation not found.")
 
         if invitation.status != InvitationStatus.PENDING:
@@ -210,7 +267,7 @@ class CollaborationService:
         if not cls.is_project_admin(project, actor):
             raise PermissionDenied("Only project owners and administrators can modify roles.")
 
-        if new_role not in CollaboratorRole.values:
+        if new_role is not None and new_role not in CollaboratorRole.values:
             raise ValidationError(f"Invalid role '{new_role}'.")
 
         collab = ProjectCollaborator.objects.filter(id=collaborator_id, project=project).first()
@@ -218,10 +275,12 @@ class CollaborationService:
             raise ValidationError("Collaborator not found.")
 
         old_role = collab.role
-        collab.role = new_role
+        if new_role is not None:
+            collab.role = new_role
         if assigned_sections is not None:
-            collab.assigned_sections = assigned_sections
+            collab.assigned_sections = cls.normalize_assigned_sections(project, assigned_sections)
         collab.save()
+        new_role = collab.role
 
         CollaborationAuditEvent.objects.create(
             project=project,

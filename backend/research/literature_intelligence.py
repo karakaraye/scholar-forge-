@@ -8,6 +8,7 @@ import os
 import logging
 from typing import Dict, Any, List, Optional
 from research.models import ResearchSource, LiteratureExtraction, SourceExcerpt, AIJob, AIJobStatus
+from research.llm_client import complete
 from workspaces.models import AuditEvent
 
 logger = logging.getLogger(__name__)
@@ -113,11 +114,22 @@ class LiteratureIntelligenceService:
             query_claim=query_claim,
             custom_instructions=custom_instructions
         )
+        model_used = "deterministic-template"
+
+        llm_result = complete(
+            cls._llm_instructions(task_type, evidence_basis, query_claim, custom_instructions),
+            cls._llm_evidence(sources, evidence_basis),
+            max_tokens=1400,
+        )
+        if llm_result is not None:
+            content = llm_result.text
+            model_used = llm_result.model
 
         job.output_payload = {
             "task_type": task_type,
             "content": content,
             "evidence_basis": evidence_basis,
+            "model": model_used,
             "academic_integrity_verified": True
         }
         job.save()
@@ -140,9 +152,58 @@ class LiteratureIntelligenceService:
             "status": "COMPLETED",
             "evidence_basis": evidence_basis,
             "content": content,
+            "model": model_used,
             "sources_analyzed": [s.title for s in sources],
             "academic_integrity_verified": True
         }
+
+    LLM_TASK_INSTRUCTIONS = {
+        "SUMMARIZE_PUBLICATION": "Write a concise scholarly summary (150-250 words) of the first publication: aim, approach, key findings and contribution, as far as the evidence shows.",
+        "EXTRACT_OBJECTIVES": "List the stated research objectives, aims and research questions of each publication as bullet points. Quote or closely paraphrase the evidence.",
+        "IDENTIFY_METHODOLOGY": "Describe each publication's research design, sample/data, instruments and analysis techniques as bullet points. Say 'not reported in the available text' for anything missing.",
+        "SUMMARIZE_FINDINGS": "Summarise each publication's reported empirical findings, keeping every reported number exactly as written.",
+        "IDENTIFY_LIMITATIONS": "List the limitations each publication acknowledges, then (separately labelled as your assessment) methodological limitations visible in the evidence.",
+        "COMPARE_STUDIES": "Compare the publications in a short narrative plus a markdown table (columns: Study, Design, Sample, Key finding). Highlight agreements and contradictions.",
+        "ORGANIZE_LITERATURE": "Group the publications into 2-5 thematic clusters. For each cluster give a heading, the studies in it, and one sentence on what unites them.",
+        "SUGGEST_RESEARCH_GAPS": "Identify 3-5 research gaps that follow from these publications. For each, cite which studies it follows from and why the gap matters.",
+        "CREATE_LITERATURE_SYNTHESIS": "Write a 250-400 word synthesised literature review paragraph set (not study-by-study summaries) with in-text author-year references to the supplied studies only.",
+        "EVIDENCE_ALIGNMENT": "Assess how well the supplied publications support the researcher's claim. Classify the support as strong, partial, absent or contradicting, and explain with reference to specific studies.",
+    }
+
+    @classmethod
+    def _llm_instructions(cls, task_type, evidence_basis, query_claim, custom_instructions) -> str:
+        parts = [
+            "You are assisting with an academic literature review.",
+            cls.LLM_TASK_INSTRUCTIONS.get(task_type, "Analyse the supplied publications."),
+            f"Evidence level for the primary publication: {evidence_basis.replace('_', ' ').lower()}. "
+            "Start your answer with a line 'Evidence basis: <level>' and do not go beyond what that level supports.",
+            "Format the answer in Markdown.",
+        ]
+        if query_claim:
+            parts.append(f"Researcher's claim to evaluate: {query_claim}")
+        if custom_instructions:
+            parts.append(f"Researcher's additional request: {custom_instructions}")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _llm_evidence(sources: List[ResearchSource], primary_basis: str) -> List[Dict[str, Any]]:
+        evidence = []
+        for index, source in enumerate(sources[:12]):
+            excerpts = list(
+                SourceExcerpt.objects.filter(source=source).values_list("content", flat=True)[:4]
+            )
+            evidence.append({
+                "study": index + 1,
+                "title": source.title,
+                "authors": list(source.authors or [])[:8],
+                "year": source.publication_year,
+                "venue": source.journal_or_publisher,
+                "doi": source.doi,
+                "evidence_basis": primary_basis if index == 0 else determine_evidence_basis(source),
+                "abstract": source.abstract or "",
+                "full_text_excerpts": excerpts,
+            })
+        return evidence
 
     @classmethod
     def _generate_literature_response(

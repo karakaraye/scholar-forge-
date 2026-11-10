@@ -156,6 +156,66 @@ class CorrectionService:
         }
 
     @classmethod
+    def _llm_analyze_items(cls, project, items: List[str], sections: List[DocumentSection]) -> Dict[int, Dict[str, Any]]:
+        """
+        Asks the configured language model to classify each feedback item, match it to a section
+        and suggest how to address it. Returns {} when no model is configured or the call fails,
+        in which case the keyword rules are used. Every value is validated before use.
+        """
+        if not items:
+            return {}
+        from research.llm_client import complete_json
+
+        categories = list(CorrectionCategory.values)
+        priorities = list(CorrectionPriority.values)
+        section_ids = {str(s.id) for s in sections}
+        evidence = {
+            "project_title": project.title,
+            "discipline": project.discipline.name if project.discipline else None,
+            "manuscript_sections": [
+                {"section_id": str(s.id), "title": s.title, "opening_text": re.sub(r"<[^>]+>", " ", s.content or "")[:400]}
+                for s in sections[:60]
+            ],
+            "feedback_items": [{"index": i, "text": text[:1500]} for i, text in enumerate(items[:60])],
+        }
+        instructions = (
+            "Classify each supervisor feedback item for a thesis revision tracker.\n"
+            f"Allowed categories: {', '.join(categories)}.\n"
+            f"Allowed priorities: {', '.join(priorities)}.\n"
+            "Return JSON of the form {\"items\": [{\"index\": 0, \"category\": \"...\", \"priority\": \"...\", "
+            "\"section_id\": \"<one of the supplied section_id values or null>\", "
+            "\"requires_evidence\": true|false, \"guidance\": \"one or two sentences on how the researcher should "
+            "address it\"}]}.\n"
+            "Set requires_evidence to true when the feedback asks for new data, analyses or citations that only the "
+            "researcher can supply. Guidance must not contain invented citations, numbers or findings."
+        )
+        data = complete_json(instructions, evidence, max_tokens=2500)
+        if not data or not isinstance(data.get("items"), list):
+            return {}
+
+        plan: Dict[int, Dict[str, Any]] = {}
+        for entry in data["items"]:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                index = int(entry.get("index"))
+            except (TypeError, ValueError):
+                continue
+            if not 0 <= index < len(items):
+                continue
+            category = entry.get("category")
+            priority = entry.get("priority")
+            section_id = entry.get("section_id")
+            plan[index] = {
+                "category": category if category in categories else None,
+                "priority": priority if priority in priorities else None,
+                "section_id": str(section_id) if section_id and str(section_id) in section_ids else None,
+                "requires_evidence": bool(entry.get("requires_evidence")),
+                "guidance": str(entry.get("guidance") or "")[:800],
+            }
+        return plan
+
+    @classmethod
     def analyze_feedback(
         cls,
         feedback: SupervisorFeedback,
@@ -187,20 +247,33 @@ class CorrectionService:
         tasks_created = []
         category_counts = {cat: 0 for cat in CorrectionCategory.values}
 
-        for item_text in feedback_items:
-            if not item_text or item_text.startswith("PDF text extraction completed"):
-                continue
+        actionable_items = [
+            item for item in feedback_items
+            if item and not item.startswith("PDF text extraction completed")
+        ]
+        llm_plan = cls._llm_analyze_items(project, actionable_items, sections)
+        sections_by_id = {str(s.id): s for s in sections}
 
-            category = cls.classify_category(item_text)
+        for item_index, item_text in enumerate(actionable_items):
+            plan = llm_plan.get(item_index, {})
+
+            category = plan.get("category") or cls.classify_category(item_text)
             category_counts[category] += 1
-            priority = PRIORITY_MAP.get(category, CorrectionPriority.MEDIUM)
-            target_section = cls.match_section(item_text, sections)
+            priority = plan.get("priority") or PRIORITY_MAP.get(category, CorrectionPriority.MEDIUM)
+            target_section = sections_by_id.get(plan.get("section_id") or "") or cls.match_section(item_text, sections)
             evidence_info = cls.check_missing_evidence(category, item_text)
+            if plan.get("requires_evidence"):
+                evidence_info["requires_evidence"] = True
+                evidence_info["guidance"] = evidence_info["guidance"] or (
+                    "Action required: Researcher must supply empirical evidence or verified sources. "
+                    "ScholarForge AI will not fabricate figures or citations."
+                )
 
             # Generate structured proposed text or template without fabricating citations
             doc_version = target_section.document.current_version_number if target_section and target_section.document else 1
             original_text = target_section.content if target_section else ""
 
+            revision_guidance = plan.get("guidance", "")
             proposed_text = ""
             if evidence_info["requires_evidence"]:
                 proposed_text = f"/* REVISION NOTE */\n{evidence_info['guidance']}\n\n{original_text}"
@@ -210,6 +283,8 @@ class CorrectionService:
                     f"{original_text}\n\n"
                     f"// Addressing supervisor request: {item_text}"
                 )
+            if revision_guidance:
+                proposed_text = f"/* SUGGESTED REVISION APPROACH */\n{revision_guidance}\n\n{proposed_text}"
 
             if auto_create_tasks:
                 task = CorrectionTask.objects.create(
@@ -244,6 +319,7 @@ class CorrectionService:
             "conflicts": conflicts,
             "category_breakdown": category_counts,
             "has_unextracted_annotations": feedback.has_unextracted_annotations,
+            "analysis_engine": "language-model" if llm_plan else "keyword-rules",
         }
 
     @classmethod

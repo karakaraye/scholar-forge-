@@ -79,9 +79,21 @@ export const DocumentExportWorkspace: React.FC<DocumentExportWorkspaceProps> = (
         idempotency_key: `export-${Date.now()}`,
       });
 
-      // Poll job progress
+      // Poll job progress. Exports may be rendered by a background worker, so a job can sit in
+      // PENDING for a while; stop polling after ~10 minutes and say so instead of spinning forever.
       let currentJob = job;
+      let polls = 0;
+      const MAX_POLLS = 300;
       const pollInterval = setInterval(async () => {
+        polls += 1;
+        if (polls > MAX_POLLS) {
+          clearInterval(pollInterval);
+          setIsExporting(false);
+          setExportStatusMessage(
+            'The export is still queued. It will appear in Export History when the export worker finishes it.'
+          );
+          return;
+        }
         try {
           const statusRes = await exportApi.getJobStatus(currentJob.id);
           currentJob = statusRes;
@@ -105,7 +117,7 @@ export const DocumentExportWorkspace: React.FC<DocumentExportWorkspaceProps> = (
           clearInterval(pollInterval);
           setIsExporting(false);
         }
-      }, 1000);
+      }, 2000);
     } catch (err: any) {
       setIsExporting(false);
       alert(err.message || 'Failed to start export');

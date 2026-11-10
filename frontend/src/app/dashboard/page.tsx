@@ -9,6 +9,7 @@ import { ResearchProject, DashboardStats } from '@/types/project';
 import Sidebar from '@/components/Sidebar';
 import StatCard from '@/components/StatCard';
 import ProjectCard from '@/components/ProjectCard';
+import PendingInvitationsBanner from '@/components/collaboration/PendingInvitationsBanner';
 import {
   FolderKanban,
   CheckCircle,
@@ -125,6 +126,8 @@ export default function DashboardPage() {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-slate-50 overflow-y-auto">
         <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+          <PendingInvitationsBanner />
+
           {/* Welcome Banner */}
           <div className="bg-navy-950 rounded-2xl p-6 sm:p-8 text-white border border-navy-900 shadow-sm relative overflow-hidden">
             <div className="absolute right-0 top-0 w-96 h-96 bg-gold-500/5 rounded-full blur-3xl pointer-events-none" />

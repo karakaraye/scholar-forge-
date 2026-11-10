@@ -37,6 +37,8 @@ from projects.access import (
     MANAGE,
     has_project_access,
     require_project_access,
+    require_section_access,
+    require_full_manuscript_access,
 )
 from workspaces.models import AuditEvent
 
@@ -2230,7 +2232,7 @@ class AIReviewAssistantView(views.APIView):
 
         task_type = request.data.get('task_type')
         section_id = request.data.get('section_id')
-        user_prompt = request.data.get('prompt', '')
+        user_prompt = request.data.get('prompt') or request.data.get('user_prompt') or ''
 
         try:
             result = ReviewService.execute_review_task(
@@ -2339,7 +2341,9 @@ class ProjectCollaboratorsView(views.APIView):
                 role=role,
                 assigned_sections=assigned_sections,
             )
-            return Response(ProjectInvitationSerializer(invitation).data, status=status.HTTP_201_CREATED)
+            data = ProjectInvitationSerializer(invitation).data
+            data['email_sent'] = bool(getattr(invitation, 'email_sent', False))
+            return Response(data, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -2381,6 +2385,62 @@ class CollaboratorDetailView(views.APIView):
             return Response({'message': 'Collaborator removed successfully.'}, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _invitation_summary(invitation):
+    inviter = invitation.invited_by
+    owner = invitation.project.owner
+    return {
+        'token': invitation.token,
+        'project_id': str(invitation.project_id),
+        'project_title': invitation.project.title,
+        'project_owner_name': (owner.get_full_name() or owner.email) if owner else '',
+        'invited_by_name': (inviter.get_full_name() or inviter.email) if inviter else '',
+        'invitee_email': invitation.invitee_email,
+        'role': invitation.role,
+        'role_label': invitation.get_role_display(),
+        'assigned_sections_count': len(invitation.assigned_sections or []),
+        'status': invitation.status,
+        'is_expired': invitation.is_expired,
+        'expires_at': invitation.expires_at,
+        'created_at': invitation.created_at,
+    }
+
+
+class MyInvitationsView(views.APIView):
+    """
+    Lists pending, unexpired project invitations addressed to the signed-in user's email.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        invitations = (
+            ProjectInvitation.objects
+            .select_related('project', 'project__owner', 'invited_by')
+            .filter(
+                invitee_email__iexact=request.user.email,
+                status=InvitationStatus.PENDING,
+                expires_at__gt=timezone.now(),
+            )
+            .order_by('-created_at')
+        )
+        return Response([_invitation_summary(inv) for inv in invitations], status=status.HTTP_200_OK)
+
+
+class InvitationDetailView(views.APIView):
+    """
+    Shows a single invitation to its addressee so they can decide whether to accept it.
+    Tokens addressed to someone else return the same 404 as unknown tokens.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, token):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        try:
+            invitation = CollaborationService.get_invitation_for_user(token=token, user=request.user)
+        except DjangoValidationError:
+            return Response({'error': 'Invitation not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(_invitation_summary(invitation), status=status.HTTP_200_OK)
 
 
 class ProjectInvitationActionView(views.APIView):
@@ -2478,6 +2538,8 @@ class ManuscriptCommentsView(views.APIView):
 
         document = ResearchDocument.objects.filter(pk=document_id, project=project).first() if document_id else None
         section = DocumentSection.objects.filter(pk=section_id, document__project=project).first() if section_id else None
+        if section is not None:
+            require_section_access(request.user, section, COMMENT)
 
         try:
             comment = CommentService.create_comment(
@@ -2506,6 +2568,8 @@ class CommentReplyView(views.APIView):
     def post(self, request, comment_id):
         comment = get_object_or_404(ManuscriptComment, pk=comment_id)
         require_project_access(request.user, comment.project, COMMENT)
+        if comment.section_id:
+            require_section_access(request.user, comment.section, COMMENT)
         content = request.data.get('content')
         try:
             reply = CommentService.add_reply(comment=comment, author=request.user, content=content)
@@ -2523,6 +2587,8 @@ class CommentStatusView(views.APIView):
     def patch(self, request, comment_id):
         comment = get_object_or_404(ManuscriptComment, pk=comment_id)
         require_project_access(request.user, comment.project, COMMENT)
+        if comment.section_id:
+            require_section_access(request.user, comment.section, COMMENT)
         new_status = request.data.get('status')
         try:
             updated = CommentService.update_status(comment=comment, new_status=new_status, actor=request.user)
@@ -2639,6 +2705,8 @@ class CorrectionTasksView(views.APIView):
 
         section_id = request.data.get('section_id')
         section = DocumentSection.objects.filter(pk=section_id, document__project=project).first() if section_id else None
+        if section is not None:
+            require_section_access(request.user, section, COMMENT)
         doc_version =section.document.current_version_number if section and section.document else 1
 
         task = CorrectionTask.objects.create(
@@ -2665,6 +2733,10 @@ class CorrectionTaskApplyView(views.APIView):
     def post(self, request, task_id):
         task = get_object_or_404(CorrectionTask, pk=task_id)
         self.check_object_permissions(request, task.project)
+        if task.section_id:
+            require_section_access(request.user, task.section, EDIT)
+        else:
+            require_full_manuscript_access(request.user, task.project, EDIT)
         new_content = request.data.get('content')
         force = request.data.get('force_override', False)
 
@@ -2737,6 +2809,7 @@ class DocumentVersionRestoreView(views.APIView):
     def post(self, request, document_id):
         document = get_object_or_404(ResearchDocument, pk=document_id)
         self.check_object_permissions(request, document.project)
+        require_full_manuscript_access(request.user, document.project, EDIT)
         target_version = request.data.get('target_version_number')
 
         if not target_version:
@@ -3231,6 +3304,7 @@ class AutoformatApplyView(views.APIView):
     def post(self, request, project_id):
         project = get_object_or_404(ResearchProject, pk=project_id)
         self.check_object_permissions(request, project)
+        require_full_manuscript_access(request.user, project, EDIT)
         selected_sections = request.data.get('selected_section_ids')
 
         result = SafeAutoformatService.apply_autoformat(
@@ -3250,6 +3324,7 @@ class AutoformatRollbackView(views.APIView):
     def post(self, request, project_id):
         project = get_object_or_404(ResearchProject, pk=project_id)
         self.check_object_permissions(request, project)
+        require_full_manuscript_access(request.user, project, EDIT)
         snapshot_id = request.data.get('snapshot_id')
 
         if not snapshot_id:

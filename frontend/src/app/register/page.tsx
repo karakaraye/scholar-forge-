@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth, readNextParam } from '@/context/AuthContext';
 import { AcademicLevel } from '@/types/auth';
 import { ACADEMIC_LEVELS } from '@/lib/constants';
 import {
@@ -55,7 +55,7 @@ export default function RegisterPage() {
 
     setIsLoading(true);
     try {
-      await register(formData);
+      await register(formData, readNextParam());
     } catch (err: unknown) {
       if (err instanceof Error) {
         setError(err.message);

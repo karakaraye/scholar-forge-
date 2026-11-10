@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth import login, logout
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
@@ -16,6 +17,7 @@ from accounts.serializers import (
     PasswordResetRequestSerializer,
     PasswordResetConfirmSerializer,
 )
+from scholarforge.emails import send_password_reset_email
 
 
 class CSRFTokenView(APIView):
@@ -107,27 +109,22 @@ class PasswordResetRequestView(APIView):
         serializer = PasswordResetRequestSerializer(data=request.data)
         if serializer.is_valid():
             email = serializer.validated_data['email']
+            generic = {'message': 'If an account exists with this email, a reset link has been dispatched.'}
             try:
-                user = User.objects.get(email__iexact=email)
-                uid = urlsafe_base64_encode(force_bytes(user.pk))
-                token = default_token_generator.make_token(user)
-                # In development/Stage 1: return token info in response and console for verification
-                return Response(
-                    {
-                        'message': 'If an account exists with this email, a reset link has been dispatched.',
-                        'dev_reset_data': {
-                            'uid': uid,
-                            'token': token,
-                        }
-                    },
-                    status=status.HTTP_200_OK
-                )
+                user = User.objects.get(email__iexact=email, is_active=True)
             except User.DoesNotExist:
                 # Do not leak user existence
-                return Response(
-                    {'message': 'If an account exists with this email, a reset link has been dispatched.'},
-                    status=status.HTTP_200_OK
-                )
+                return Response(generic, status=status.HTTP_200_OK)
+
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = default_token_generator.make_token(user)
+            send_password_reset_email(user, uid, token)
+
+            payload = dict(generic)
+            if settings.EXPOSE_DEV_RESET_LINKS:
+                # Local development only: lets the reset flow be exercised without a mail server.
+                payload['dev_reset_data'] = {'uid': uid, 'token': token}
+            return Response(payload, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 

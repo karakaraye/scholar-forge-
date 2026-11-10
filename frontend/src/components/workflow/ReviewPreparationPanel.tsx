@@ -133,7 +133,20 @@ export default function ReviewPreparationPanel({ projectId }: ReviewPreparationP
         task_type: selectedTask,
         user_prompt: userPrompt.trim(),
       });
-      setAiResult(res);
+      // The API returns the review payload directly. Prefer the language-model narrative
+      // (`ai_review`) and fall back to the structured automated findings.
+      const payload = res as unknown as Record<string, unknown>;
+      if (payload.refusal) {
+        setAiResult({ success: false, refusal: true, message: String(payload.message || '') });
+      } else {
+        const narrative = typeof payload.ai_review === 'string' ? payload.ai_review : undefined;
+        const { task_type: _taskType, ai_review: _aiReview, generated_by: _generatedBy, ...findings } = payload;
+        setAiResult({
+          success: true,
+          message: narrative,
+          data: findings,
+        });
+      }
     } catch (err: unknown) {
       setAiResult({
         success: false,
@@ -267,9 +280,21 @@ export default function ReviewPreparationPanel({ projectId }: ReviewPreparationP
                   </>
                 )}
               </div>
-              <p className="whitespace-pre-wrap font-sans">
-                {aiResult.message || JSON.stringify(aiResult.data, null, 2)}
-              </p>
+              {aiResult.message ? (
+                <p className="whitespace-pre-wrap font-sans">{aiResult.message}</p>
+              ) : (
+                <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
+                  {JSON.stringify(aiResult.data ?? {}, null, 2)}
+                </pre>
+              )}
+              {aiResult.message && aiResult.data && Object.keys(aiResult.data).length > 0 && (
+                <details className="mt-3">
+                  <summary className="cursor-pointer font-semibold">Automated checks</summary>
+                  <pre className="mt-2 whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
+                    {JSON.stringify(aiResult.data, null, 2)}
+                  </pre>
+                </details>
+              )}
             </div>
           )}
         </div>

@@ -8,11 +8,19 @@ import {
 } from '@/types/project';
 import { collaborationApi } from '@/lib/api';
 
+export interface AssignableSection {
+  id: string;
+  title: string;
+  parentId?: string | null;
+}
+
 interface CollaboratorsManagerProps {
   projectId: string;
   initialCollaborators?: ProjectCollaborator[];
   initialInvitations?: ProjectInvitation[];
   currentUserRole?: CollaboratorRole | null;
+  /** Manuscript sections that can be assigned to a collaborator. Top-level chapters are offered. */
+  sections?: AssignableSection[];
   onRefresh?: () => void;
 }
 
@@ -29,6 +37,7 @@ export const CollaboratorsManager: React.FC<CollaboratorsManagerProps> = ({
   initialCollaborators,
   initialInvitations,
   currentUserRole,
+  sections = [],
   onRefresh,
 }) => {
   const [collaborators, setCollaborators] = useState<ProjectCollaborator[]>(initialCollaborators || []);
@@ -36,7 +45,13 @@ export const CollaboratorsManager: React.FC<CollaboratorsManagerProps> = ({
   const [isInviting, setIsInviting] = useState(false);
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<CollaboratorRole>('SUPERVISOR');
-  const [sectionInput, setSectionInput] = useState('');
+  const [selectedSectionIds, setSelectedSectionIds] = useState<string[]>([]);
+  const assignableSections = sections.filter((s) => !s.parentId);
+  const sectionTitleById = new Map(sections.map((s) => [s.id, s.title]));
+
+  const toggleSection = (id: string) => {
+    setSelectedSectionIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -73,21 +88,23 @@ export const CollaboratorsManager: React.FC<CollaboratorsManagerProps> = ({
     setError(null);
     setSuccess(null);
 
-    const sections = sectionInput
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-
     try {
       const invite = await collaborationApi.invite(projectId, {
         email: email.trim(),
         role,
-        assigned_sections: sections,
+        assigned_sections: selectedSectionIds,
       });
       setInvitations((prev) => [invite, ...prev]);
-      setSuccess(`Invitation sent to ${email} as ${role}.`);
+      if (invite.email_sent === false) {
+        const link = `${window.location.origin}/invitations/${invite.token}`;
+        setSuccess(
+          `Invitation created for ${email}, but the email could not be sent. Share this link with them: ${link}`
+        );
+      } else {
+        setSuccess(`Invitation sent to ${email} as ${role}.`);
+      }
       setEmail('');
-      setSectionInput('');
+      setSelectedSectionIds([]);
       setIsInviting(false);
       if (onRefresh) onRefresh();
     } catch (err: any) {
@@ -188,18 +205,30 @@ export const CollaboratorsManager: React.FC<CollaboratorsManagerProps> = ({
               </select>
             </div>
           </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Assigned Chapters / Sections (Optional, comma-separated)
-            </label>
-            <input
-              type="text"
-              value={sectionInput}
-              onChange={(e) => setSectionInput(e.target.value)}
-              placeholder="e.g. Chapter 3: Methodology, Chapter 4: Results"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-            />
-          </div>
+          {assignableSections.length > 0 && (
+            <fieldset>
+              <legend className="block text-xs font-semibold text-slate-700 mb-1">
+                Limit to chapters (optional)
+              </legend>
+              <p className="text-[11px] text-slate-500 mb-2">
+                Leave all unticked for whole-manuscript access. Scoped collaborators can read everything
+                but only edit or comment within the ticked chapters and their subsections.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-40 overflow-y-auto">
+                {assignableSections.map((s) => (
+                  <label key={s.id} className="flex items-center gap-2 text-xs text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={selectedSectionIds.includes(s.id)}
+                      onChange={() => toggleSection(s.id)}
+                      className="rounded border-slate-300"
+                    />
+                    <span className="truncate">{s.title}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
           <p className="text-xs text-slate-500 italic">
             Role note: {ROLE_DESCRIPTIONS[role]}
           </p>
@@ -266,7 +295,7 @@ export const CollaboratorsManager: React.FC<CollaboratorsManagerProps> = ({
                         <div className="flex flex-wrap gap-1">
                           {c.assigned_sections.map((sec, idx) => (
                             <span key={idx} className="bg-slate-100 px-2 py-0.5 rounded text-[11px]">
-                              {sec}
+                              {sectionTitleById.get(sec) || sec}
                             </span>
                           ))}
                         </div>

@@ -22,7 +22,7 @@ from documents.structure_engine import (
     list_available_templates,
     generate_document_outline,
 )
-from workspaces.models import WorkspaceMembership
+from projects.access import get_section_scope, section_in_scope
 
 
 class AcademicTemplatesListView(views.APIView):
@@ -52,8 +52,10 @@ class DocumentDetailView(views.APIView):
 class DocumentSectionsListView(views.APIView):
     """
     List sections of a document or create a new section/subsection.
+    Section-scoped collaborators may only add subsections beneath their assigned sections.
     """
     permission_classes = [permissions.IsAuthenticated, IsDocumentOwnerOrWorkspaceMember]
+    allow_section_scoped_writes = True
 
     def get(self, request, document_id):
         document = get_object_or_404(ResearchDocument, pk=document_id)
@@ -70,6 +72,19 @@ class DocumentSectionsListView(views.APIView):
 
         serializer = DocumentSectionCreateUpdateSerializer(data=request.data)
         if serializer.is_valid():
+            parent = serializer.validated_data.get('parent_section')
+            if parent is not None and parent.document_id != document.id:
+                return Response(
+                    {'parent_section': ['Parent section must belong to this document.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            scope = get_section_scope(request.user, document.project)
+            if scope is not None and (parent is None or not section_in_scope(parent, scope)):
+                return Response(
+                    {'detail': 'You can only add subsections within the sections assigned to you.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
             # Determine order_index if not provided
             order = serializer.validated_data.get('order_index')
             if order is None:
@@ -101,6 +116,21 @@ class DocumentSectionDetailView(views.APIView):
 
         serializer = DocumentSectionCreateUpdateSerializer(section, data=request.data, partial=True)
         if serializer.is_valid():
+            new_parent = serializer.validated_data.get('parent_section', section.parent_section)
+            if (new_parent.pk if new_parent else None) != section.parent_section_id:
+                if new_parent is not None and (
+                    new_parent.document_id != section.document_id or new_parent.pk == section.pk
+                ):
+                    return Response(
+                        {'parent_section': ['Parent section must be another section of the same document.']},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                scope = get_section_scope(request.user, section.document.project)
+                if scope is not None and (new_parent is None or not section_in_scope(new_parent, scope)):
+                    return Response(
+                        {'detail': 'You can only move sections within the sections assigned to you.'},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
             updated_section = serializer.save()
             updated_section.document.save()  # touch document updated_at
             return Response(DocumentSectionSerializer(updated_section).data, status=status.HTTP_200_OK)
@@ -110,6 +140,13 @@ class DocumentSectionDetailView(views.APIView):
     def delete(self, request, pk):
         section = get_object_or_404(DocumentSection, pk=pk)
         self.check_object_permissions(request, section)
+
+        scope = get_section_scope(request.user, section.document.project)
+        if scope is not None and str(section.pk) in scope:
+            return Response(
+                {'detail': 'Assigned sections can only be deleted by the project owner.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         doc = section.document
         section.delete()
@@ -158,8 +195,10 @@ class DocumentSectionsReorderView(views.APIView):
 class DocumentVersionsListView(views.APIView):
     """
     List version history snapshots or take a new manual version snapshot.
+    Snapshots are non-destructive, so section-scoped editors may create them.
     """
     permission_classes = [permissions.IsAuthenticated, IsDocumentOwnerOrWorkspaceMember]
+    allow_section_scoped_writes = True
 
     def get(self, request, document_id):
         document = get_object_or_404(ResearchDocument, pk=document_id)

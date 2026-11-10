@@ -67,5 +67,20 @@ DRF integration (`backend/projects/permissions.py`, `backend/documents/permissio
 - Endpoints addressed by a child object's primary key (instruments, datasets, comments, exports, …) call `require_project_access(user, obj.project, CAPABILITY)` explicitly.
 - Project listings use `accessible_projects_q(user)` so accepted collaborators see shared projects.
 
-`assigned_sections` scoping is stored but not yet enforced by the policy.
+### Section scoping
+`ProjectCollaborator.assigned_sections` holds section IDs, which are validated against the project when inviting or updating a collaborator. When the list is non-empty:
+
+- **Reading** the manuscript is unrestricted.
+- **Editing** a section, **adding** subsections, **commenting** on a section and **raising or applying** corrections are allowed only for assigned sections and their subsections (`has_section_access`).
+- An assigned root section cannot be deleted by the scoped collaborator.
+- **Whole-manuscript actions** need an unscoped role (`require_full_manuscript_access`): reorder, version restore, structure templates and auto-format.
+
+Project owners and workspace members are never section-scoped. The project detail API returns `capabilities` and `assigned_sections`, so the editor shows out-of-scope sections as read-only.
+
+## 4. Invitation flow
+1. The owner invites an email address with a role (and optional sections) on the Collaborators tab.
+2. `send_project_invitation_email` mails a link to `FRONTEND_URL/invitations/<token>`.
+3. The invitee signs in or registers. `?next=` returns them to the invitation afterwards.
+4. They review the project, role and scope on the invitation page, then accept or decline. Pending invitations also appear on their dashboard (`GET /api/v1/research/collaborations/invitations/`).
+5. Tokens addressed to another email return the same 404 as unknown tokens.
 

@@ -1,0 +1,31 @@
+# ScholarForge AI reverse proxy.
+# Serves the web app and API from ONE origin so the SameSite session/CSRF cookies always work.
+#
+# SITE_ADDRESS examples:
+#   http://localhost        local production-mode test (plain HTTP)
+#   app.example.com         public deployment: Caddy obtains and renews a TLS certificate automatically
+{$SITE_ADDRESS:http://localhost} {
+	encode zstd gzip
+
+	# Django: REST API, admin and admin static assets
+	@django path /api/* /admin /admin/* /static/*
+	handle @django {
+		reverse_proxy backend:8000
+	}
+
+	# Everything else: Next.js
+	handle {
+		reverse_proxy frontend:3000
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		-Server
+	}
+
+	# Exports and uploads can be large
+	request_body {
+		max_size 25MB
+	}
+}

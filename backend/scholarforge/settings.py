@@ -1,10 +1,14 @@
 """
-Django settings for ScholarForge AI Stage 1.
+Django settings for ScholarForge AI.
+
+Every deployment-sensitive value is read from the environment (see .env.example).
+Production is the default: DEBUG is off unless DJANGO_DEBUG=True.
 """
 
 from pathlib import Path
 import os
 import sys
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -14,25 +18,40 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR.parent / '.env')
 load_dotenv(BASE_DIR / '.env')
 
-SECRET_KEY = os.environ.get(
-    'DJANGO_SECRET_KEY',
-    'scholarforge-insecure-dev-key-change-in-production-2026-stage1'
-)
 
-DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() in ('true', '1', 'yes')
+def env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None or value.strip() == '':
+        return default
+    return value.strip().lower() in ('true', '1', 'yes', 'on')
+
+
+def env_list(name, default=''):
+    return [item.strip() for item in os.environ.get(name, default).split(',') if item.strip()]
+
+
+DEBUG = env_bool('DJANGO_DEBUG', False)
 
 # True while running the automated test suite (pytest or `manage.py test`).
 # Enables deterministic offline behaviour such as the mock AI engine.
 TESTING = (
-    os.environ.get('DJANGO_TESTING', '').lower() in ('true', '1', 'yes')
+    env_bool('DJANGO_TESTING', False)
     or 'pytest' in sys.modules
     or (len(sys.argv) > 1 and sys.argv[1] == 'test')
 )
 
-ALLOWED_HOSTS = os.environ.get(
-    'DJANGO_ALLOWED_HOSTS',
-    'localhost,127.0.0.1,0.0.0.0'
-).split(',')
+_DEV_SECRET_KEY = 'scholarforge-insecure-dev-key-never-use-in-production'
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', '').strip()
+if not SECRET_KEY:
+    if DEBUG or TESTING:
+        SECRET_KEY = _DEV_SECRET_KEY
+    else:
+        raise ImproperlyConfigured(
+            'DJANGO_SECRET_KEY must be set when DJANGO_DEBUG is false. '
+            'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(64))"'
+        )
+
+ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,0.0.0.0')
 
 # Application definition
 INSTALLED_APPS = [
@@ -58,6 +77,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -138,9 +158,19 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
-# Static files
+# Static files (Django admin / DRF assets), served by WhiteNoise in production.
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {
+        'BACKEND': (
+            'django.contrib.staticfiles.storage.StaticFilesStorage'
+            if DEBUG or TESTING
+            else 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+        ),
+    },
+}
 
 # Private user files: uploaded datasets, source documents, supervisor feedback,
 # guideline files and generated DOCX/PDF exports. Never served directly; exports are
@@ -170,25 +200,78 @@ SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 SESSION_COOKIE_NAME = 'scholarforge_sessionid'
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
-SESSION_COOKIE_SECURE = not DEBUG  # True in production
 SESSION_COOKIE_AGE = 60 * 60 * 24 * 7  # 7 days
 
 CSRF_COOKIE_NAME = 'scholarforge_csrftoken'
 CSRF_COOKIE_HTTPONLY = False  # Allows frontend client to read CSRF header for mutating requests
 CSRF_COOKIE_SAMESITE = 'Lax'
-CSRF_COOKIE_SECURE = not DEBUG
 
+# Secure (HTTPS-only) cookies default on outside DEBUG. Set both to False only for a
+# production-mode stack served over plain HTTP on localhost.
+SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', not DEBUG)
+CSRF_COOKIE_SECURE = env_bool('CSRF_COOKIE_SECURE', not DEBUG)
+
+# Public origin of the web app, used for links in emails (invitations, password reset).
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+
+_LOCAL_ORIGINS = 'http://localhost:3000,http://127.0.0.1:3000'
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-]
-CSRF_TRUSTED_ORIGINS = [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-]
+CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS', _LOCAL_ORIGINS)
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS', _LOCAL_ORIGINS)
+for _origin in (FRONTEND_URL,):
+    if _origin and _origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(_origin)
+    if _origin and _origin not in CORS_ALLOWED_ORIGINS:
+        CORS_ALLOWED_ORIGINS.append(_origin)
 
-# Email settings for password reset simulation
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-DEFAULT_FROM_EMAIL = 'support@scholarforge.ai'
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+# HTTPS hardening (behind a TLS-terminating reverse proxy such as Caddy or nginx).
+if not DEBUG and not TESTING:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = env_bool('DJANGO_SECURE_SSL_REDIRECT', True)
+    SECURE_HSTS_SECONDS = int(os.environ.get('DJANGO_SECURE_HSTS_SECONDS', '31536000'))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS', True)
+    SECURE_HSTS_PRELOAD = env_bool('DJANGO_SECURE_HSTS_PRELOAD', False)
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_REFERRER_POLICY = 'same-origin'
+    X_FRAME_OPTIONS = 'DENY'
+
+# Email: console output by default; set EMAIL_HOST (+ credentials) to send real mail via SMTP.
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '').strip()
+EMAIL_BACKEND = os.environ.get(
+    'EMAIL_BACKEND',
+    'django.core.mail.backends.smtp.EmailBackend' if EMAIL_HOST
+    else 'django.core.mail.backends.console.EmailBackend',
+)
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = env_bool('EMAIL_USE_TLS', True)
+EMAIL_USE_SSL = env_bool('EMAIL_USE_SSL', False)
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '15'))
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'ScholarForge AI <no-reply@scholarforge.ai>')
+
+# Password-reset responses include the raw uid/token only in local development so the flow
+# can be exercised without a mail server. Never enabled outside DEBUG.
+EXPOSE_DEV_RESET_LINKS = DEBUG and env_bool('EXPOSE_DEV_RESET_LINKS', True)
+
+# Document export execution: 'sync' renders inside the request (development/tests);
+# 'worker' queues jobs for `python manage.py run_export_worker`.
+EXPORT_JOB_MODE = os.environ.get('EXPORT_JOB_MODE', 'sync' if (DEBUG or TESTING) else 'worker').strip().lower()
+if EXPORT_JOB_MODE not in ('sync', 'worker'):
+    raise ImproperlyConfigured("EXPORT_JOB_MODE must be 'sync' or 'worker'.")
+EXPORT_JOB_STALE_MINUTES = int(os.environ.get('EXPORT_JOB_STALE_MINUTES', '30'))
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {'format': '%(asctime)s %(levelname)s %(name)s: %(message)s'},
+    },
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'standard'},
+    },
+    'root': {'handlers': ['console'], 'level': os.environ.get('DJANGO_LOG_LEVEL', 'INFO')},
+    'loggers': {
+        'django.request': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+    },
+}

@@ -1,3 +1,5 @@
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 from django.urls import reverse
 from rest_framework import status
@@ -111,13 +113,23 @@ class TestAuthentication:
         assert response.data['institution'] == 'Cambridge University'
         assert response.data['orcid_id'] == '0000-0002-1825-0097'
 
-    def test_password_reset_flow(self, api_client, test_user):
-        # 1. Request reset
+    def test_password_reset_flow(self, api_client, test_user, settings, mailoutbox):
+        settings.EXPOSE_DEV_RESET_LINKS = False
+        settings.FRONTEND_URL = 'https://app.example.com'
+
+        # 1. Request reset: the link is emailed, never returned in the API response
         request_url = reverse('auth-password-reset')
         resp = api_client.post(request_url, {'email': test_user.email}, format='json')
         assert resp.status_code == status.HTTP_200_OK
-        uid = resp.data['dev_reset_data']['uid']
-        token = resp.data['dev_reset_data']['token']
+        assert 'dev_reset_data' not in resp.data
+        assert len(mailoutbox) == 1
+        assert mailoutbox[0].to == [test_user.email]
+
+        link = next(line for line in mailoutbox[0].body.splitlines() if 'reset-password?' in line).strip()
+        assert link.startswith('https://app.example.com/reset-password?')
+        query = parse_qs(urlparse(link).query)
+        uid = query['uid'][0]
+        token = query['token'][0]
 
         # 2. Confirm reset
         confirm_url = reverse('auth-password-reset-confirm')

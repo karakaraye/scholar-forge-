@@ -96,6 +96,9 @@ class ResearchProjectDetailSerializer(serializers.ModelSerializer):
     documents = ResearchDocumentSerializer(many=True, read_only=True)
     owner_name = serializers.CharField(source='owner.get_full_name', read_only=True)
     workspace_name = serializers.CharField(source='workspace.name', read_only=True)
+    current_user_role = serializers.SerializerMethodField()
+    capabilities = serializers.SerializerMethodField()
+    assigned_sections = serializers.SerializerMethodField()
 
     class Meta:
         model = ResearchProject
@@ -116,9 +119,41 @@ class ResearchProjectDetailSerializer(serializers.ModelSerializer):
             'documents',
             'owner_name',
             'workspace_name',
+            'current_user_role',
+            'capabilities',
+            'assigned_sections',
             'created_at',
             'updated_at',
         ]
+
+    def _user(self):
+        request = self.context.get('request')
+        return getattr(request, 'user', None)
+
+    def get_current_user_role(self, obj):
+        user = self._user()
+        if not user or not user.is_authenticated:
+            return None
+        if obj.owner_id == user.pk:
+            return 'PROJECT_OWNER'
+        from research.models import ProjectCollaborator
+        role = (
+            ProjectCollaborator.objects
+            .filter(project=obj, user=user, is_active=True)
+            .values_list('role', flat=True)
+            .first()
+        )
+        return role or 'WORKSPACE_MEMBER'
+
+    def get_capabilities(self, obj):
+        from projects.access import get_project_capabilities
+        return sorted(get_project_capabilities(self._user(), obj))
+
+    def get_assigned_sections(self, obj):
+        """None = may write to every section; list = only these section IDs (and their subsections)."""
+        from projects.access import get_section_scope
+        scope = get_section_scope(self._user(), obj)
+        return None if scope is None else sorted(scope)
 
 
 class ResearchProjectCreateUpdateSerializer(serializers.ModelSerializer):

@@ -117,9 +117,11 @@ scholarforge-ai/
 │   ├── manage.py
 │   └── requirements.txt
 ├── infrastructure/               # Docker & deployment orchestration
-│   ├── docker-compose.yml        # PostgreSQL, backend & frontend containers
-│   ├── backend.Dockerfile
-│   └── frontend.Dockerfile
+│   ├── docker-compose.yml        # proxy, frontend, backend, worker, migrate, PostgreSQL
+│   ├── Caddyfile                 # HTTPS + same-origin routing (/api, /admin, /static → Django)
+│   ├── .env.example              # production stack settings (copy to infrastructure/.env)
+│   ├── backend.Dockerfile        # Gunicorn + WhiteNoise image (also used by the worker)
+│   └── frontend.Dockerfile       # Next.js standalone image
 ├── docs/                         # Architecture, schema, and API documentation
 │   ├── ARCHITECTURE.md
 │   ├── DATABASE_SCHEMA.md
@@ -135,7 +137,7 @@ scholarforge-ai/
 
 ## 💻 Running & Testing Locally
 
-The recommended local setup runs the backend and frontend directly on your machine. The Docker Compose stack in `infrastructure/` does **not** work yet (see [What's Left To Be Done](#-whats-left-to-be-done)).
+For day-to-day development, run the backend and frontend directly on your machine. To try the production setup locally, use the Docker stack in [Deploying](#-deploying).
 
 ### Prerequisites
 - Python **3.12**
@@ -150,10 +152,13 @@ cd scholarforge-ai
 cp .env.example .env
 ```
 
-The backend reads `.env` from the repository root. Two things to decide in it:
+The backend reads `.env` from the repository root. Three things to decide in it:
 
-- **Database.** `.env.example` points at PostgreSQL. For a quick SQLite setup, comment out `DB_ENGINE` and every `POSTGRES_*` line. The backend only uses PostgreSQL when `DB_ENGINE=postgresql` or `POSTGRES_DB` is set.
-- **AI.** Keep `AI_MOCK_MODE=True` to use the offline, deterministic writing assistant. To use live generation, set `OPENAI_API_KEY` and `AI_MOCK_MODE=False`.
+- **Debug mode.** Keep `DJANGO_DEBUG=True` locally. When it is `False` (the default if unset), `DJANGO_SECRET_KEY` must be set and HTTPS-only cookies are used.
+- **Database.** `.env.example` points at PostgreSQL. For a quick SQLite setup, comment out `DB_ENGINE` and every `POSTGRES_*` line.
+- **AI.** Keep `AI_MOCK_MODE=True` for offline, deterministic output. To use a live model, set `OPENAI_API_KEY` and `AI_MOCK_MODE=False`.
+
+Emails (invitations, password resets) are printed to the backend console unless `EMAIL_HOST` is set. In debug mode the password-reset page also shows the reset link directly.
 
 ### 2. Backend (Django, port 8000)
 Windows (PowerShell):
@@ -171,6 +176,11 @@ On macOS/Linux, activate the virtualenv with `source venv/bin/activate` instead.
 
 Check it is up: [http://127.0.0.1:8000/api/v1/health/](http://127.0.0.1:8000/api/v1/health/). The Django admin is at [http://127.0.0.1:8000/admin/](http://127.0.0.1:8000/admin/).
 
+Exports render inside the request in debug mode. To try the background worker locally, set `EXPORT_JOB_MODE=worker` and run this in another terminal:
+```bash
+python manage.py run_export_worker
+```
+
 ### 3. Frontend (Next.js, port 3000)
 In a second terminal:
 ```bash
@@ -178,146 +188,321 @@ cd frontend
 npm install
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000). The frontend calls the API at `NEXT_PUBLIC_API_URL` (default `http://127.0.0.1:8000`).
+Open [http://localhost:3000](http://localhost:3000). The frontend calls the API at `NEXT_PUBLIC_API_URL`, which defaults to `http://127.0.0.1:8000`.
 
 ### 4. Automated tests
 
 | Suite | Command (from the folder shown) | Notes |
 | :--- | :--- | :--- |
-| Backend unit/API tests: 189 tests, ~6 min | `backend`: `.\venv\Scripts\pytest` | Uses the database from `.env`. Uploads/exports go to a temp folder. The AI writing assistant runs in mock mode unless `AI_MOCK_MODE` is set. |
-| Run one backend file | `backend`: `.\venv\Scripts\pytest tests/test_project_access_control.py` | Role/permission tests |
-| Frontend component tests: 53 tests | `frontend`: `npm run test` | Vitest + Testing Library, API calls mocked |
+| Backend unit/API tests: 209 tests, ~9 min | `backend`: `.\venv\Scripts\pytest` | Uses the database from `.env`. Uploads/exports go to a temp folder. AI features run in mock mode unless `AI_MOCK_MODE` is set; model calls are faked in tests. |
+| Run one backend file | `backend`: `.\venv\Scripts\pytest tests/test_deployment_features.py` | Invitations, section scoping, export worker, AI model integration |
+| Frontend component tests: 56 tests | `frontend`: `npm run test` | Vitest + Testing Library, API calls mocked |
 | Type check | `frontend`: `npx tsc --noEmit` | Must report no errors |
-| Production build | `frontend`: `npm run build` | |
+| Production build | `frontend`: `npm run build` | Produces `.next/standalone` for the Docker image |
 | End-to-end browser tests | `frontend`: `npx playwright install chromium` once, then `npm run test:e2e` | Backend **and** frontend must both be running on ports 8000 and 3000 |
 
 `pytest.ini` uses `--reuse-db`. After changing models or migrations, run `pytest --create-db` once.
 
-### 5. Manual smoke test
-After both servers are running, check the main flows in the browser:
+### 5. Manual testing
+Automated tests use a fake AI model and a fake mailbox, so they can't prove the app works for a real user. Follow the [Real-World Testing Guide](#-real-world-testing-guide) below.
 
-1. **Register and log in.** Then create a project through the setup wizard on `/research/create`.
-2. **Write.** Open the project, type in a section, and confirm autosave. Run an AI writing action; in mock mode it returns a clearly labelled mock suggestion.
-3. **Library.** On `/library`, search for papers. This needs internet access to OpenAlex, Crossref and Semantic Scholar. Attach a source to the project and insert a citation.
-4. **Data.** Upload a small CSV dataset and run a descriptive statistics or t-test analysis.
-5. **Collaboration.** Register a second account. There is no invitation-acceptance page or email yet, so add that account to the project directly: in the Django admin, go to **Research → Project collaborators → Add** and choose role `VIEWER`. Log in as that account. Confirm it can open the project but cannot edit sections. Change the role to `CO_AUTHOR` and confirm editing now works.
-6. **Export.** Export to DOCX and PDF, then download both files. Generated files land in `backend/media/exports/`.
+---
+
+## ✅ Real-World Testing Guide
+
+Work through the parts in order. Each step says what to do and what you should see. Note every step that does not match in a simple table (Step · Pass/Fail · Note), then see [When a step fails](#when-a-step-fails).
+
+| Part | What it proves | Needs |
+| :--- | :--- | :--- |
+| A | Every main feature works in a browser | Python, Node.js |
+| B | AI features give good answers with a real model | An OpenAI API key (costs a few cents) |
+| C | Real emails arrive and their links work | An SMTP account (Mailtrap, Gmail, SendGrid, …) |
+| D | The automated browser tests pass | Part A servers running |
+| E | The production Docker stack runs | Docker Desktop |
+| F | The live site is secure and working | A deployed server and domain |
+
+### Part A — Local browser walkthrough
+
+You need **two separate browser sessions** for two different accounts, for example a normal window and a private/incognito window. "Window 1" is the project owner; "Window 2" is a collaborator.
+
+**A1. Start the app**
+1. In `.env` set `DJANGO_DEBUG=True` and `AI_MOCK_MODE=True`. Comment out `DB_ENGINE` and the `POSTGRES_*` lines to use SQLite.
+2. Start the backend and frontend as in [Running & Testing Locally](#-running--testing-locally) (steps 2 and 3).
+3. Open [http://127.0.0.1:8000/api/v1/health/](http://127.0.0.1:8000/api/v1/health/) → you see `"status": "healthy"`.
+4. Open [http://localhost:3000](http://localhost:3000) → the landing page loads.
+
+Keep the backend terminal visible: emails are printed there.
+
+**A2. Accounts and password reset** (Window 1)
+1. Register as `owner@example.com` → you land on the dashboard.
+2. Log out, then click **Forgot password?** on the login page and enter `owner@example.com`.
+   - The backend terminal prints an email containing a `/reset-password?uid=…&token=…` link.
+   - In debug mode the page also shows the link.
+3. Open the link, set a new password → you see a success message.
+4. Log in with the **new** password → it works. The old password is rejected.
+
+**A3. Create a project** (Window 1)
+1. Go to `/research/create` and complete all 5 wizard steps (any discipline).
+2. You land on the project page, and the left panel lists chapters (Introduction, Methodology, …).
+
+**A4. Writing and autosave**
+1. Click a chapter and type a paragraph → the status changes to "Saving manuscript…" and then "All changes saved".
+2. Reload the page → your text is still there.
+3. Open **Versions** and take a snapshot → it appears in the version list.
+
+**A5. AI writing assistant (mock mode)**
+1. Select some text and run an AI action, for example "Improve writing" → a suggestion appears, clearly marked as mock output.
+2. Reject it → your text is unchanged. Accept it → it is inserted.
+
+**A6. Library and citations**
+1. Go to `/library` and search for `mobile money savings` → results from OpenAlex/Crossref appear (needs internet).
+2. Save a paper, attach it to your project, then insert a citation in a chapter → an in-text citation appears and the bibliography lists the paper.
+
+**A7. Data and statistics**
+1. Save this as `sample.csv`:
+   ```
+   id,group,score,age
+   1,A,72,21
+   2,A,68,22
+   3,A,75,20
+   4,A,70,23
+   5,B,81,22
+   6,B,85,21
+   7,B,79,24
+   8,B,83,22
+   ```
+2. In the project's **Datasets** tab, upload it → it shows 8 rows and 4 columns.
+3. In the **Statistics** tab, run **Descriptive statistics** on `score` → mean 76.625.
+4. Run an **Independent t-test** with `score` as the dependent variable and `group` as the group → a t-statistic, p-value and effect size appear, and p is below 0.05.
+
+**A8. Invitations and roles** (Windows 1 and 2)
+1. Window 1: on the project's **Collaborators** tab, click **Invite Collaborator**. Enter `coauthor@example.com`, choose **Co-Author**, tick only the **Methodology** chapter, and send.
+   - The page confirms the invitation.
+   - The backend terminal prints an email with a link to `/invitations/<token>`.
+2. Window 2: open that link → you are asked to sign in or create an account.
+3. Click **Create an account** and register as `coauthor@example.com`.
+   - You come back to the invitation page, showing the project title, the role "Co-Author" and "1 assigned section".
+4. Click **Accept invitation** → you are taken to the project.
+5. Window 2: open **Methodology** and type → it saves.
+6. Window 2: open **Introduction** → an amber notice says the section is read-only, and you cannot type.
+7. Window 2: open the **Collaborators** tab → there are no invite or remove controls.
+8. Window 1: change the co-author's role to **Viewer**. Then, in Window 2, reload → every chapter is read-only, but you can still read everything.
+9. Window 1: invite `decline@example.com`. In a third session, register as that address, open the dashboard, click **Review** on the banner, then **Decline** → the invitation disappears from Window 1's pending list.
+10. Window 2: paste a **different** person's invitation link → "This invitation could not be found" (links only work for the address they were sent to).
+
+**A9. Supervisor review**
+1. Window 1: invite `supervisor@example.com` as **Supervisor**, then accept it in a new session as in A8.
+2. As the supervisor:
+   - add an inline comment on a paragraph → it appears in the comments panel for both users
+   - create a correction task in the **Corrections** tab → it appears in the tracker
+   - try typing in a chapter → read-only
+3. As the owner, apply the correction from the **Corrections** tab. Then, as the supervisor, **Approve** it → its status changes to approved.
+
+**A10. Exports**
+1. Window 1: open the **Export** workspace and export **DOCX**, then **PDF** → each finishes and appears in Export History.
+2. Download both and open them in Word and a PDF reader → title page, table of contents, chapters and references are present.
+
+**A11. Background export worker**
+1. Stop the backend. Add `EXPORT_JOB_MODE=worker` to `.env` and start the backend again.
+2. Start an export → it stays "queued" (the worker isn't running yet).
+3. In a new terminal, in `backend` with the virtualenv active, run:
+   ```bash
+   python manage.py run_export_worker
+   ```
+   → the worker picks the job up and the export completes in the browser.
+4. Stop the worker with Ctrl+C and remove `EXPORT_JOB_MODE` from `.env` again.
+
+### Part B — Real AI model
+1. In `.env` set `OPENAI_API_KEY=<your key>` and `AI_MOCK_MODE=False`, then restart the backend.
+2. Re-run these with real content in the project (at least a few paragraphs, the CSV from A7 and 2–3 library papers):
+
+   | Feature | Where | Check that the answer… |
+   | :--- | :--- | :--- |
+   | Writing assistant | Editor → AI panel | Is not marked "mock" and fits the selected text |
+   | Literature intelligence | Literature panel → summarise / compare | Starts with "Evidence basis:" and mentions only the papers you selected |
+   | Results interpretation | **Results** tab (after running the A7 analyses) | Repeats the exact numbers from A7 and does not call a correlation causal |
+   | AI review assistant | **Review** tab → Execute AI Academic Review | Shows a written review, with the automated checks underneath |
+   | Feedback analysis | **Feedback** tab → paste 2–3 supervisor comments → AI Correction Analysis | Creates tasks with sensible categories and chapter matches |
+
+3. For every answer, check for **invented** authors, years, DOIs, statistics or quotes. Anything not in your project is a failure.
+4. On an empty project, run the AI review → it still refuses ("insufficient written content") rather than inventing text.
+5. Set a wrong `OPENAI_API_KEY` and restart:
+   - the writing assistant shows a clear error
+   - the other AI features still answer with their built-in template text
+
+### Part C — Real email
+1. Get SMTP credentials. A free [Mailtrap](https://mailtrap.io) sandbox catches emails safely; a Gmail account needs an *app password*.
+2. In `.env` set:
+   ```
+   EMAIL_HOST=<smtp host>
+   EMAIL_PORT=587
+   EMAIL_HOST_USER=<user>
+   EMAIL_HOST_PASSWORD=<password>
+   EMAIL_USE_TLS=True
+   DEFAULT_FROM_EMAIL=ScholarForge AI <you@yourdomain>
+   FRONTEND_URL=http://localhost:3000
+   EXPOSE_DEV_RESET_LINKS=False
+   ```
+   Then restart the backend.
+3. Request a password reset → the email arrives in the inbox (not the terminal), and its link opens the reset page and works.
+4. Invite a new address → the invitation email arrives, and its link opens `/invitations/<token>`.
+5. Set a wrong `EMAIL_HOST_PASSWORD` and invite someone → the invitation is still created, and the page shows a link to share manually.
+
+### Part D — Automated browser tests
+With the Part A servers running in mock mode:
+```bash
+cd frontend
+```
+```bash
+npx playwright install chromium
+```
+```bash
+npm run test:e2e
+```
+All specs should pass. The tests register their own throwaway users.
+
+### Part E — Production Docker stack on your computer
+1. Start **Docker Desktop** and wait until it says "running". Stop the Part A servers.
+2. Create the settings file:
+   ```bash
+   cp infrastructure/.env.example infrastructure/.env
+   ```
+   Set `DJANGO_SECRET_KEY` and `POSTGRES_PASSWORD` to long random values.
+3. Build and start (the first build takes several minutes):
+   ```bash
+   cd infrastructure
+   ```
+   ```bash
+   docker compose up --build -d
+   ```
+4. Check the services:
+   ```bash
+   docker compose ps -a
+   ```
+   → `migrate` shows *Exited (0)*, and `db`, `backend`, `worker`, `frontend` and `proxy` are *running*. `backend` becomes *healthy* after about 20 s.
+5. Open [http://localhost](http://localhost) → the app loads. Note there is no `:3000`.
+6. Create an admin account, then open [http://localhost/admin/](http://localhost/admin/) → the admin is styled, which means static files work:
+   ```bash
+   docker compose exec backend python manage.py createsuperuser
+   ```
+7. Repeat A2–A4, A8 (steps 1–6) and A10 at `http://localhost`. Watch the worker render exports:
+   ```bash
+   docker compose logs -f worker
+   ```
+8. Stop with `docker compose down`. Your data is kept. ⚠️ `docker compose down -v` **deletes** the database and uploaded files.
+
+### Part F — Live server after deploying
+After following [Deploying](#-deploying) on a real domain:
+1. Open `http://app.example.com` → it redirects to `https://`, with a valid padlock.
+2. Register, log in and reload the page → you stay logged in. If you are logged out on reload, the domain layout is wrong: see [Domain layout](#3-domain-layout).
+3. Request a password reset and send an invitation → the email links start with `https://app.example.com`.
+4. Run the security check inside the container → no errors. The `SECURE_HSTS_PRELOAD` warning is optional.
+   ```bash
+   docker compose exec backend python manage.py check --deploy
+   ```
+5. Repeat A8 and A10 on the live site with two real email addresses.
+6. Restart the server, then confirm projects and exported files are still there (volumes persist).
+
+### When a step fails
+Write down the part and step number, then collect:
+- **Browser:** open DevTools (F12). Copy errors from the **Console**, and the failing request and its response from the **Network** tab.
+- **Backend:** the error printed in the backend terminal. With Docker, run `docker compose logs backend --tail 100` (or `worker` for exports).
+- **What you expected** vs **what happened**.
+
+That information is enough to reproduce and fix the problem.
 
 ---
 
 ## 🚧 What's Left To Be Done
 
-This list comes from a code review on 2026-11-10. Items are grouped by impact.
+All the deployment blockers and the four missing features from the 2026-11-10 review are now implemented (see [Recently completed](#recently-completed)). Remaining work:
 
-### Blocks deployment
-| # | Gap | Where |
-| :-: | :--- | :--- |
-| 1 | **Frontend Docker image does not build.** The Dockerfile copies `.next/standalone` and `public/`, but `next.config.mjs` lacks `output: 'standalone'` and `frontend/public/` does not exist. | `infrastructure/frontend.Dockerfile`, `frontend/next.config.mjs` |
-| 2 | **Backend runs Django's dev server** (`runserver`) in the container. There is no Gunicorn, no static-file serving (the admin is unstyled when `DEBUG=False`), and no `collectstatic`. | `infrastructure/backend.Dockerfile`, `docker-compose.yml` |
-| 3 | **Production security settings are hard-coded or tied to `DEBUG`.** `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` only allow localhost. Cookie `Secure` flags follow `DEBUG`; the `SESSION_COOKIE_SECURE` / `CSRF_COOKIE_SECURE` lines in `.env.example` are never read. `SECRET_KEY` falls back to a public default. There is no HTTPS redirect, HSTS or proxy-SSL header. | `backend/scholarforge/settings.py` |
-| 4 | **`NEXT_PUBLIC_API_URL` is baked in at build time.** Compose sets it only at runtime, and to `http://backend:8000`, which a browser cannot reach. | `docker-compose.yml`, `frontend/src/lib/api.ts` |
-| 5 | **No email delivery.** `EMAIL_BACKEND` is the console backend, so password-reset emails are never sent. Collaborator invitations create a token but send no email. | `settings.py`, `research/collaboration_service.py` |
-
-### Missing or incomplete features
-- **No invitation-acceptance page.** The API (`/api/v1/research/collaborations/invitations/<token>/accept/`) and `collaborationApi.acceptInvitation` exist, but no page calls them.
-- **Most "AI" features use built-in templates, not a language model.** Only the writing assistant (`research/ai_service.py`) calls OpenAI. Literature intelligence, the AI review assistant, results interpretation and supervisor-feedback correction analysis produce deterministic text.
-- **Section scoping is not enforced.** `ProjectCollaborator.assigned_sections` is stored but ignored by the access policy.
-- **Exports run inside the HTTP request.** There is no worker queue, so large documents can hit proxy timeouts. Moving export jobs to Celery/RQ would fix this.
-- **Mock-mode switches are inconsistent.** Discovery, verification and literature services read `AI_MOCK_MODE` themselves (default `False`), unlike the writing assistant.
+### Not yet verified
+Automated tests pass: 209 backend, 56 frontend, type check and production build. The following still need a person to try them; each one has a part in the [Real-World Testing Guide](#-real-world-testing-guide):
+- **Browser walkthrough of every feature.** Part A.
+- **Live AI output quality.** Model calls are only tested with a fake model. Part B.
+- **Real email delivery.** Tests use a fake mailbox. Part C.
+- **Playwright browser tests.** Not run since the latest changes. Part D.
+- **Docker images.** Never built yet: Docker Desktop was not running. `docker compose config` validates and the Next.js standalone build succeeds. Part E.
 
 ### Operational hygiene
 - No rate limiting on login, registration or AI endpoints (DRF throttling not configured).
-- No `LOGGING` configuration, error tracking (e.g. Sentry) or health checks beyond `/api/v1/health/`.
+- No error tracking (e.g. Sentry). Logs go to stdout only.
 - No CI pipeline. Tests, type check and build only run manually.
-- Uploads and exports live on the local filesystem. Running more than one backend instance needs shared or object storage.
+- Uploads and exports live on a single Docker volume. Running backends on several servers needs object storage (`django-storages`).
+- No automated database or media backups.
 - Housekeeping:
   - `requirements.txt` mixes runtime and test dependencies.
   - `frontend/tsconfig.tsbuildinfo` is committed.
   - Line endings are mixed (add a `.gitattributes`).
 
+### Recently completed
+| Item | What changed |
+| :--- | :--- |
+| Frontend Docker image | Next.js `output: 'standalone'`, `frontend/public/`, `npm ci`, non-root user |
+| Backend server | Gunicorn + WhiteNoise, `collectstatic` at build time, non-root user, health check |
+| Security settings | `DEBUG` off by default. Secret key required in production. CORS/CSRF origins, secure cookies, HTTPS redirect, HSTS, SMTP and logging all come from environment variables. |
+| API address | The browser calls the API on the **same origin**; Caddy routes `/api/`, `/admin/` and `/static/` to Django. No build-time URL is needed. |
+| Email | Password-reset and invitation emails via SMTP (`EMAIL_*`). Reset tokens are no longer returned by the API outside debug mode. |
+| Invitation page | `/invitations/<token>` to review, accept or decline. Pending invitations are listed on the dashboard. Login/registration return to the invitation afterwards. |
+| AI features | Literature intelligence, results interpretation, the AI review assistant and feedback analysis use the configured model on the same evidence. They fall back to the deterministic output if the model is unavailable. |
+| Section scoping | Collaborators limited to chapters can read everything but edit/comment only within those chapters. Whole-manuscript actions are blocked for them, and the editor shows out-of-scope sections as read-only. |
+| Background exports | `EXPORT_JOB_MODE=worker` queues exports for `python manage.py run_export_worker`. Jobs are claimed atomically and stale jobs are failed automatically. |
+
 ---
 
-## 🌐 Getting It Deployment-Ready
+## 🚀 Deploying
 
-Work through these steps in order. Steps 1–4 fix the blockers above; steps 5–7 harden the system for real users.
+The production stack in `infrastructure/` runs six containers:
 
-### 1. Make backend settings environment-driven
-In `backend/scholarforge/settings.py`:
-```python
-DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1', 'yes')
-SECRET_KEY = os.environ['DJANGO_SECRET_KEY'] if not DEBUG else os.environ.get('DJANGO_SECRET_KEY', 'dev-only-key')
+| Service | Role |
+| :--- | :--- |
+| `proxy` | Caddy: HTTPS (automatic certificates) and routing. The only service with published ports. |
+| `frontend` | Next.js standalone server |
+| `backend` | Django API on Gunicorn |
+| `worker` | `run_export_worker`: renders DOCX/PDF exports |
+| `migrate` | One-off: `migrate` + `seed_disciplines`, then exits |
+| `db` | PostgreSQL 16 |
 
-def env_list(name, default=''):
-    return [v.strip() for v in os.environ.get(name, default).split(',') if v.strip()]
+Data lives in Docker volumes: `pgdata` (database), `mediadata` (uploads and exports) and `caddy_data` (certificates).
 
-CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000')
-CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000')
-
-SESSION_COOKIE_SECURE = CSRF_COOKIE_SECURE = not DEBUG
-if not DEBUG:
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    SECURE_SSL_REDIRECT = True
-    SECURE_HSTS_SECONDS = 31536000
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-
-EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
-EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
-EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
-EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
-EMAIL_USE_TLS = True
+### 1. Try it locally
+Docker Desktop must be running.
+```bash
+cp infrastructure/.env.example infrastructure/.env
 ```
-Then run `python manage.py check --deploy` with production env vars and resolve every warning.
+Edit `infrastructure/.env`: set `DJANGO_SECRET_KEY` and `POSTGRES_PASSWORD`. Then:
+```bash
+cd infrastructure
+docker compose up --build -d
+```
+```bash
+docker compose ps
+```
+Open [http://localhost](http://localhost). Create an admin account with:
+```bash
+docker compose exec backend python manage.py createsuperuser
+```
 
-### 2. Serve the backend properly
-- Add `gunicorn` and `whitenoise` to `requirements.txt`. Insert `whitenoise.middleware.WhiteNoiseMiddleware` right after `SecurityMiddleware`.
-- In `backend.Dockerfile`, add `RUN python manage.py collectstatic --noinput`. Change the command to:
-  ```
-  gunicorn scholarforge.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120
-  ```
-- Run `migrate` and `seed_disciplines` as a one-off release step, not on every container start.
+### 2. Deploy to a server
+1. Get a Linux server with Docker, and point a DNS record (e.g. `app.example.com`) at it.
+2. Clone the repository and create `infrastructure/.env` from `infrastructure/.env.example`. Set:
+   - `SITE_ADDRESS=app.example.com`
+   - `PUBLIC_URL=https://app.example.com`
+   - `DJANGO_ALLOWED_HOSTS=app.example.com,backend`
+   - new random `DJANGO_SECRET_KEY` and `POSTGRES_PASSWORD`
+   - `EMAIL_*` for your mail provider
+   - `OPENAI_API_KEY` if you want live AI
+3. Open ports 80 and 443, then run `docker compose up --build -d` in `infrastructure/`. Caddy obtains the TLS certificate on first start.
+4. Create an admin account (command above) and work through [Part F of the testing guide](#part-f--live-server-after-deploying) on the live URL.
 
-### 3. Fix the frontend image
-- Add `output: 'standalone'` to `frontend/next.config.mjs`.
-- Create `frontend/public/` (a favicon is enough), or remove the `COPY ... /app/public` line.
-- Pass the API URL as a build argument:
-  ```dockerfile
-  ARG NEXT_PUBLIC_API_URL
-  ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-  ```
-  Set it in compose under `build.args` to the public HTTPS URL of the API.
+To update after pulling new code, run `docker compose up --build -d` again. The `migrate` service applies new migrations before the backend starts.
 
-### 4. Choose a domain layout that keeps session cookies working
-Auth uses `SameSite=Lax` session and CSRF cookies, and the browser calls the API directly. The frontend and API must therefore be **same-site**. Two layouts work:
-- **One domain, recommended.** A reverse proxy (Caddy or nginx) serves `https://app.example.com`. It routes `/api/` and `/admin/` to Django and everything else to Next.js. Set `NEXT_PUBLIC_API_URL=https://app.example.com`.
-- **Sibling subdomains.** Use `app.example.com` (frontend) and `api.example.com` (backend). List the frontend origin in `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
+### 3. Domain layout
+Login uses `SameSite=Lax` session and CSRF cookies, so the app and API must be **same-site**. The bundled Caddy proxy puts both on one origin, which is the simplest option. To host the API elsewhere, use a sibling subdomain (e.g. `api.example.com` next to `app.example.com`). Build the frontend with `NEXT_PUBLIC_API_URL=https://api.example.com` and list the app origin in `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`. Unrelated domains (e.g. `*.vercel.app` + `*.onrender.com`) break login.
 
-Hosting the frontend and API on unrelated domains (e.g. `*.vercel.app` + `*.onrender.com`) breaks login.
-
-### 5. Data, files and secrets
-- **Database.** Use managed PostgreSQL 16 with automated daily backups.
-- **Files.** Point `DJANGO_MEDIA_ROOT` at a persistent volume (already wired in `docker-compose.yml`). Back that volume up too. For multiple instances, switch to object storage (`django-storages` + S3/R2/GCS).
-- **Secrets.** Required environment variables in production:
-
-  | Area | Variables |
-  | :--- | :--- |
-  | Django | `DJANGO_SECRET_KEY` (new, random), `DJANGO_DEBUG=False`, `DJANGO_ALLOWED_HOSTS` |
-  | Cross-origin | `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `FRONTEND_URL` |
-  | Database | `POSTGRES_*` |
-  | Files | `DJANGO_MEDIA_ROOT` |
-  | Email | `EMAIL_*` |
-  | AI | `OPENAI_API_KEY`, `AI_MOCK_MODE=False`, optional `SEMANTIC_SCHOLAR_API_KEY` |
-
-  Never commit `.env`.
-
-### 6. Reliability and abuse protection
-- Configure DRF throttling: `DEFAULT_THROTTLE_CLASSES` / `DEFAULT_THROTTLE_RATES`, with stricter scopes on auth and AI endpoints.
-- Add `LOGGING` to stdout and error tracking (Sentry).
-- Point an uptime monitor at `/api/v1/health/`.
-- Move export generation to a background worker before inviting heavy users.
-
-### 7. Release checklist
-Run before every deploy, ideally in a GitHub Actions workflow on each push:
+### 4. Before every release
+Run these, ideally in CI on every push:
 ```bash
 cd backend && pytest
 ```
@@ -325,9 +510,9 @@ cd backend && pytest
 cd frontend && npm ci && npx tsc --noEmit && npm run test && npm run build
 ```
 ```bash
-cd backend && python manage.py check --deploy && python manage.py makemigrations --check --dry-run
+cd backend && python manage.py makemigrations --check --dry-run
 ```
-After deploying, repeat the [manual smoke test](#5-manual-smoke-test) against the live URL with a test account.
+Run `python manage.py check --deploy` with your production environment variables and resolve any warnings.
 
 ---
 

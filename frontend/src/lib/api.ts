@@ -62,6 +62,7 @@ import {
   ReviewTaskType,
   ProjectCollaborator,
   ProjectInvitation,
+  InvitationSummary,
   ManuscriptComment,
   CommentReply,
   SupervisorFeedback,
@@ -94,9 +95,11 @@ import {
   RulesConfig,
 } from '@/types/formatting';
 
-// In Next.js client, requests can use direct origin or backend port
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+// Base URL of the Django API, inlined at build time.
+//   unset        -> http://127.0.0.1:8000 (local `npm run dev` against `manage.py runserver`)
+//   "" (empty)   -> same origin, e.g. behind infrastructure/Caddyfile, which routes /api/ to Django
+//   any URL      -> that origin (it must be same-site with the app for session cookies to work)
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/+$/, '');
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -1143,6 +1146,14 @@ export const collaborationApi = {
     apiRequest<{ message: string }>(
       `/api/v1/research/projects/${projectId}/collaborators/${collaboratorId}/`,
       { method: 'DELETE' }
+    ),
+
+  myInvitations: () =>
+    apiRequest<InvitationSummary[]>('/api/v1/research/collaborations/invitations/'),
+
+  getInvitation: (token: string) =>
+    apiRequest<InvitationSummary>(
+      `/api/v1/research/collaborations/invitations/${encodeURIComponent(token)}/`
     ),
 
   acceptInvitation: (token: string) =>

@@ -77,9 +77,17 @@ export interface ResearchProject {
   documents?: ResearchDocument[];
   owner_name?: string;
   workspace_name?: string;
+  /** Present on the project detail response. */
+  current_user_role?: CollaboratorRole | 'WORKSPACE_MEMBER' | null;
+  /** Subset of view/comment/edit/approve/manage held by the signed-in user. */
+  capabilities?: ProjectCapability[];
+  /** null = may edit every section; otherwise only these section IDs and their subsections. */
+  assigned_sections?: string[] | null;
   created_at: string;
   updated_at: string;
 }
+
+export type ProjectCapability = 'view' | 'comment' | 'edit' | 'approve' | 'manage';
 
 export interface DashboardStats {
   total_projects: number;
@@ -953,6 +961,25 @@ export interface ProjectInvitation {
   expires_at: string;
   accepted_at?: string;
   is_expired: boolean;
+  created_at: string;
+  /** Only on the response to creating an invitation. */
+  email_sent?: boolean;
+}
+
+/** An invitation as seen by the person it is addressed to. */
+export interface InvitationSummary {
+  token: string;
+  project_id: string;
+  project_title: string;
+  project_owner_name: string;
+  invited_by_name: string;
+  invitee_email: string;
+  role: CollaboratorRole;
+  role_label: string;
+  assigned_sections_count: number;
+  status: ProjectInvitation['status'];
+  is_expired: boolean;
+  expires_at: string;
   created_at: string;
 }
 
