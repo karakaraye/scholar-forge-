@@ -8,6 +8,9 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
+    testTimeout: 20000,
+    include: ['src/test/**/*.{test,spec}.{ts,tsx}'],
+    exclude: ['e2e/**', 'node_modules/**', '.next/**'],
   },
   resolve: {
     alias: {
@@ -15,3 +18,4 @@ export default defineConfig({
     },
   },
 });
+

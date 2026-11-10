@@ -5,3 +5,4 @@ urlpatterns = [
     path('', AcademicDisciplineListView.as_view(), name='discipline-list'),
     path('<uuid:id>/', AcademicDisciplineDetailView.as_view(), name='discipline-detail'),
 ]
+

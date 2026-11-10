@@ -42,6 +42,9 @@ services:
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5432
       - FRONTEND_URL=http://localhost:3000
+      - DJANGO_MEDIA_ROOT=/app/media
+    volumes:
+      - mediadata:/app/media
     ports:
       - "8000:8000"
     depends_on:
@@ -73,3 +76,6 @@ networks:
 volumes:
   pgdata:
     driver: local
+  mediadata:
+    driver: local
+

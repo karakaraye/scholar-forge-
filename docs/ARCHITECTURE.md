@@ -51,3 +51,4 @@ ScholarForge rejects rigid, one-size-fits-all document structures. It dynamicall
   - Computer Science, Information Technology, Management, Business Administration, Accounting, Economics, Finance, Engineering, Medicine, Nursing, Public Health, Education, Law, Political Science, Sociology, Psychology, Agriculture, Environmental Science, Arts, Humanities, Other.
 - **6 Citation Standards:**
   - APA 7th edition, MLA 9th edition, Chicago 17th edition, Harvard, IEEE, Vancouver.
+

@@ -12,6 +12,7 @@ import {
   Settings,
   Sparkles,
   ExternalLink,
+  Users,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -25,6 +26,7 @@ export default function Sidebar({ className = '' }: SidebarProps) {
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/research', label: 'My Research', icon: FolderKanban },
     { href: '/research/create', label: 'Create Research', icon: PlusCircle, highlight: true },
+    { href: '/supervisor', label: 'Supervisor Review', icon: Users },
     { href: '/library', label: 'Research Library', icon: BookOpen },
     { href: '/profile', label: 'Profile', icon: User },
     { href: '/settings', label: 'Settings', icon: Settings },
@@ -90,3 +92,4 @@ export default function Sidebar({ className = '' }: SidebarProps) {
     </aside>
   );
 }
+

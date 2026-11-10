@@ -172,3 +172,4 @@ export default function ProjectCard({ project, onArchive, onDelete }: ProjectCar
     </>
   );
 }
+

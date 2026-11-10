@@ -4,9 +4,12 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import StatCard from '@/components/StatCard';
 import ProjectCard from '@/components/ProjectCard';
 import ConfirmationModal from '@/components/ConfirmationModal';
+import OutlineManager from '@/components/workspace/OutlineManager';
+import VersionHistoryModal from '@/components/workspace/VersionHistoryModal';
+import AIAssistantPanel from '@/components/workspace/AIAssistantPanel';
 import { FolderKanban } from 'lucide-react';
 import { DOCUMENT_CATEGORIES, CITATION_STYLES, CATEGORY_SUBTYPES } from '@/lib/constants';
-import { ResearchProject } from '@/types/project';
+import { ResearchProject, DocumentSection, DocumentVersion } from '@/types/project';
 
 describe('Constants and Configurations', () => {
   it('defines 3 primary document categories', () => {
@@ -116,5 +119,143 @@ describe('ProjectCard Component', () => {
     expect(screen.getByText('ACTIVE')).toBeInTheDocument();
     expect(screen.getByText('IEEE')).toBeInTheDocument();
     expect(screen.getByText('Workspace')).toBeInTheDocument();
+  });
+});
+
+describe('Stage 2: OutlineManager Component', () => {
+  const sampleSections: DocumentSection[] = [
+    {
+      id: 'sec-1',
+      title: 'Chapter One: Introduction',
+      section_type: 'CHAPTER',
+      order_index: 0,
+      content: '<p>Introduction content</p>',
+      word_count: 24,
+      created_at: '2026-11-01T12:00:00Z',
+      updated_at: '2026-11-01T12:00:00Z',
+    },
+    {
+      id: 'sec-2',
+      title: 'Chapter Two: Literature Review',
+      section_type: 'CHAPTER',
+      order_index: 1,
+      content: '<p>Literature review content</p>',
+      word_count: 50,
+      created_at: '2026-11-01T12:00:00Z',
+      updated_at: '2026-11-01T12:00:00Z',
+    },
+  ];
+
+  it('renders outline sections with titles and word counts', () => {
+    const handleSelect = vi.fn();
+    render(
+      <OutlineManager
+        sections={sampleSections}
+        selectedSectionId="sec-1"
+        onSelectSection={handleSelect}
+        onAddSection={vi.fn()}
+        onRenameSection={vi.fn()}
+        onDeleteSection={vi.fn()}
+        onReorder={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('Chapter One: Introduction')).toBeInTheDocument();
+    expect(screen.getByText('Chapter Two: Literature Review')).toBeInTheDocument();
+    expect(screen.getByText(/24 words/)).toBeInTheDocument();
+    expect(screen.getByText(/50 words/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Chapter Two: Literature Review'));
+    expect(handleSelect).toHaveBeenCalledWith(sampleSections[1]);
+  });
+});
+
+describe('Stage 2: VersionHistoryModal Component', () => {
+  const sampleVersions: DocumentVersion[] = [
+    {
+      id: 'ver-1',
+      document_id: 'doc-1',
+      version_number: 1,
+      snapshot_data: { sections: [] },
+      created_by_name: 'Dr. Turing',
+      change_summary: 'Initial outline scaffolding',
+      created_at: '2026-11-01T10:00:00Z',
+    },
+    {
+      id: 'ver-2',
+      document_id: 'doc-1',
+      version_number: 2,
+      snapshot_data: { sections: [] },
+      created_by_name: 'Dr. Turing',
+      change_summary: 'Added Chapter 3 Methodology',
+      created_at: '2026-11-02T15:00:00Z',
+    },
+  ];
+
+  it('renders versions with summaries and handles restore triggers', () => {
+    const handleRestore = vi.fn();
+    render(
+      <VersionHistoryModal
+        isOpen={true}
+        onClose={vi.fn()}
+        versions={sampleVersions}
+        currentVersionNumber={2}
+        onCreateSnapshot={vi.fn()}
+        onRestoreVersion={handleRestore}
+        loading={false}
+      />
+    );
+
+    expect(screen.getByText('Manuscript Revision History')).toBeInTheDocument();
+    expect(screen.getByText('Initial outline scaffolding')).toBeInTheDocument();
+    expect(screen.getByText('Added Chapter 3 Methodology')).toBeInTheDocument();
+    expect(screen.getByText('v1')).toBeInTheDocument();
+    expect(screen.getAllByText('v2').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Current Active')).toBeInTheDocument();
+
+    // Click Restore button on v1
+    const restoreBtn = screen.getByText('Restore');
+    fireEvent.click(restoreBtn);
+
+    expect(screen.getByText(/Restore Manuscript to Version 1/)).toBeInTheDocument();
+  });
+});
+
+describe('Stage 2: AIAssistantPanel Component', () => {
+  const sampleProject: ResearchProject = {
+    id: 'proj-123',
+    title: 'Machine Learning Optimization for Edge Nodes',
+    document_category: 'RESEARCH_PAPER',
+    document_subtype: 'Original Research Article',
+    academic_level: 'PHD',
+    status: 'ACTIVE',
+    discipline: 'cs-uuid',
+    discipline_name: 'Computer Science',
+    country: 'United States',
+    preferred_language: 'English',
+    citation_style: 'IEEE',
+    created_at: '2026-11-01T12:00:00Z',
+    updated_at: '2026-11-02T12:00:00Z',
+  };
+
+  it('renders AI task selectors and tab options', () => {
+    render(
+      <AIAssistantPanel
+        project={sampleProject}
+        activeSectionTitle="Chapter 1: Introduction"
+        onApplySuggestion={vi.fn()}
+        onRequestAI={vi.fn()}
+        onFeedbackAI={vi.fn()}
+        consistencyReport={null}
+        onRunConsistencyCheck={vi.fn()}
+        consistencyLoading={false}
+      />
+    );
+
+    expect(screen.getByText('AI Assistant')).toBeInTheDocument();
+    expect(screen.getByText('Consistency')).toBeInTheDocument();
+    expect(screen.getByText('Context')).toBeInTheDocument();
+    expect(screen.getByText('Chapter 1: Introduction')).toBeInTheDocument();
+    expect(screen.getByText('Request AI Assistance')).toBeInTheDocument();
   });
 });

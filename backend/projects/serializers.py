@@ -11,6 +11,7 @@ from disciplines.models import AcademicDiscipline
 from disciplines.serializers import AcademicDisciplineSerializer
 from workspaces.models import Workspace, WorkspaceMembership
 from documents.models import ResearchDocument, DocumentSection
+from documents.structure_engine import generate_document_outline
 
 
 class ResearchRequirementsSerializer(serializers.ModelSerializer):
@@ -186,8 +187,15 @@ class ResearchProjectCreateUpdateSerializer(serializers.ModelSerializer):
             document_type="MAIN_MANUSCRIPT"
         )
 
-        # Generate default dynamic outline sections based on category & subtype
-        self._generate_default_outline(document, project.document_category, project.document_subtype)
+        # Generate multidisciplinary dynamic outline sections via Academic Structure Engine
+        discipline_name = project.discipline.name if project.discipline else ""
+        generate_document_outline(
+            document=document,
+            discipline_name=discipline_name,
+            category=project.document_category,
+            subtype=project.document_subtype,
+            academic_level=project.academic_level
+        )
 
         return project
 
@@ -206,45 +214,3 @@ class ResearchProjectCreateUpdateSerializer(serializers.ModelSerializer):
 
         return instance
 
-    def _generate_default_outline(self, document, category, subtype):
-        """
-        Creates an initial intelligent chapter/section outline tailored to document category.
-        Avoids forcing a rigid 5-chapter structure across all academic disciplines.
-        """
-        if category == DocumentCategory.ACADEMIC_PROJECT:
-            sections = [
-                ("Introduction & Problem Statement", "INTRODUCTION", 0),
-                ("Literature Review & Theoretical Framework", "LITERATURE_REVIEW", 1),
-                ("Research Methodology & System Design", "METHODOLOGY", 2),
-                ("Implementation, Analysis & Findings", "RESULTS", 3),
-                ("Discussion, Conclusions & Recommendations", "CONCLUSION", 4),
-            ]
-        elif category == DocumentCategory.RESEARCH_PAPER:
-            sections = [
-                ("Abstract & Keywords", "ABSTRACT", 0),
-                ("Introduction & Research Context", "INTRODUCTION", 1),
-                ("Conceptual Foundations & Related Work", "LITERATURE_REVIEW", 2),
-                ("Methodological Approach / Research Design", "METHODOLOGY", 3),
-                ("Empirical Analysis & Results", "RESULTS", 4),
-                ("Discussion & Academic Implications", "DISCUSSION", 5),
-                ("Conclusions & Future Directions", "CONCLUSION", 6),
-            ]
-        else:  # JOURNAL_ARTICLE
-            sections = [
-                ("Abstract", "ABSTRACT", 0),
-                ("Introduction", "INTRODUCTION", 1),
-                ("Methods", "METHODOLOGY", 2),
-                ("Results", "RESULTS", 3),
-                ("Discussion", "DISCUSSION", 4),
-                ("Conclusions & References", "CONCLUSION", 5),
-            ]
-
-        for title, sec_type, order in sections:
-            DocumentSection.objects.create(
-                document=document,
-                title=title,
-                section_type=sec_type,
-                order_index=order,
-                content="",
-                word_count=0
-            )

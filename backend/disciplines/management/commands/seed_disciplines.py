@@ -57,3 +57,4 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"Successfully seeded disciplines: {created_count} created, {updated_count} updated."
         ))
+

@@ -11,8 +11,8 @@ def health_check(request):
     return Response({
         'status': 'healthy',
         'service': 'ScholarForge AI API',
-        'version': '1.0.0',
-        'stage': 'Stage 1 - SaaS Foundation'
+        'version': '2.0.0',
+        'stage': 'Stage 2 - AI-Assisted Academic Writing Workspace'
     })
 
 
@@ -23,4 +23,6 @@ urlpatterns = [
     path('api/v1/disciplines/', include('disciplines.urls')),
     path('api/v1/projects/', include('projects.urls')),
     path('api/v1/workspaces/', include('workspaces.urls')),
+    path('api/v1/documents/', include('documents.urls')),
+    path('api/v1/research/', include('research.urls')),
 ]

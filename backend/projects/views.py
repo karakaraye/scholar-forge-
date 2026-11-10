@@ -10,6 +10,7 @@ from projects.serializers import (
     ResearchProjectCreateUpdateSerializer,
 )
 from projects.permissions import IsProjectOwnerOrWorkspaceMember
+from projects.access import MANAGE, accessible_projects_q
 
 
 class ResearchProjectListCreateView(generics.ListCreateAPIView):
@@ -27,7 +28,7 @@ class ResearchProjectListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         user = self.request.user
         queryset = ResearchProject.objects.filter(
-            Q(owner=user) | Q(workspace__memberships__user=user)
+            accessible_projects_q(user)
         ).distinct().select_related('discipline', 'owner', 'workspace')
 
         # Filters
@@ -59,6 +60,7 @@ class ResearchProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
     Enforces object-level permission check.
     """
     permission_classes = [permissions.IsAuthenticated, IsProjectOwnerOrWorkspaceMember]
+    project_capabilities = {'DELETE': MANAGE}
     lookup_field = 'id'
 
     def get_serializer_class(self):
@@ -69,7 +71,7 @@ class ResearchProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         user = self.request.user
         return ResearchProject.objects.filter(
-            Q(owner=user) | Q(workspace__memberships__user=user)
+            accessible_projects_q(user)
         ).distinct().select_related('discipline', 'owner', 'workspace').prefetch_related('documents__sections')
 
 
@@ -78,6 +80,7 @@ class ResearchProjectArchiveView(APIView):
     Toggle archive status on a research project.
     """
     permission_classes = [permissions.IsAuthenticated, IsProjectOwnerOrWorkspaceMember]
+    project_capabilities = {'POST': MANAGE}
 
     def post(self, request, id):
         try:
@@ -111,7 +114,7 @@ class DashboardStatsView(APIView):
     def get(self, request):
         user = request.user
         base_qs = ResearchProject.objects.filter(
-            Q(owner=user) | Q(workspace__memberships__user=user)
+            accessible_projects_q(user)
         ).distinct()
 
         counts = base_qs.aggregate(

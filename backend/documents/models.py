@@ -24,6 +24,15 @@ class ResearchDocument(models.Model):
         verbose_name_plural = 'Research Documents'
         ordering = ['-updated_at']
 
+    @property
+    def order(self):
+        return self.order_index
+
+    @property
+    def content(self):
+        sections = self.sections.all().order_by('order_index')
+        return "\n\n".join([s.content for s in sections if s.content])
+
     def __str__(self):
         return f"{self.title} (v{self.current_version_number})"
 
@@ -72,6 +81,17 @@ class DocumentSection(models.Model):
 
     def __str__(self):
         return f"{self.order_index + 1}. {self.title}"
+
+    @property
+    def content_html(self):
+        return self.content or ""
+
+    @property
+    def content_json(self):
+        return {
+            "html": self.content or "",
+            "text": self.content or ""
+        }
 
 
 class DocumentVersion(models.Model):

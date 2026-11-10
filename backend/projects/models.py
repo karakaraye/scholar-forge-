@@ -82,6 +82,140 @@ class ResearchProject(models.Model):
     def __str__(self):
         return f"{self.title} ({self.get_document_category_display()})"
 
+    @property
+    def problem_statement(self):
+        req = getattr(self, 'requirements', None)
+        if req and isinstance(req.custom_parameters, dict):
+            return req.custom_parameters.get('problem_statement', '')
+        return ''
+
+    @problem_statement.setter
+    def problem_statement(self, val):
+        req = getattr(self, 'requirements', None)
+        if req:
+            if not isinstance(req.custom_parameters, dict):
+                req.custom_parameters = {}
+            req.custom_parameters['problem_statement'] = val
+            req.save(update_fields=['custom_parameters'])
+
+    @property
+    def research_aim(self):
+        req = getattr(self, 'requirements', None)
+        if req and isinstance(req.custom_parameters, dict):
+            return req.custom_parameters.get('research_aim', '')
+        return ''
+
+    @research_aim.setter
+    def research_aim(self, val):
+        req = getattr(self, 'requirements', None)
+        if req:
+            if not isinstance(req.custom_parameters, dict):
+                req.custom_parameters = {}
+            req.custom_parameters['research_aim'] = val
+            req.save(update_fields=['custom_parameters'])
+
+    @property
+    def objectives(self):
+        req = getattr(self, 'requirements', None)
+        if req and req.research_objectives:
+            return [line.strip() for line in req.research_objectives.splitlines() if line.strip()]
+        return []
+
+    @objectives.setter
+    def objectives(self, val):
+        req = getattr(self, 'requirements', None)
+        if req:
+            if isinstance(val, list):
+                req.research_objectives = "\n".join(val)
+            else:
+                req.research_objectives = str(val)
+            req.save(update_fields=['research_objectives'])
+
+    @property
+    def research_questions(self):
+        req = getattr(self, 'requirements', None)
+        if req and isinstance(req.custom_parameters, dict):
+            raw = req.custom_parameters.get('research_questions', '')
+            if isinstance(raw, list):
+                return raw
+            elif isinstance(raw, str):
+                return [line.strip() for line in raw.splitlines() if line.strip()]
+        return []
+
+    @research_questions.setter
+    def research_questions(self, val):
+        req = getattr(self, 'requirements', None)
+        if req:
+            if not isinstance(req.custom_parameters, dict):
+                req.custom_parameters = {}
+            req.custom_parameters['research_questions'] = val
+            req.save(update_fields=['custom_parameters'])
+
+    @property
+    def hypotheses(self):
+        req = getattr(self, 'requirements', None)
+        if req and isinstance(req.custom_parameters, dict):
+            raw = req.custom_parameters.get('research_hypotheses', '')
+            if isinstance(raw, list):
+                return raw
+            elif isinstance(raw, str):
+                return [line.strip() for line in raw.splitlines() if line.strip()]
+        return []
+
+    @hypotheses.setter
+
+    @property
+    def keywords(self):
+        req = getattr(self, 'requirements', None)
+        if req and isinstance(req.custom_parameters, dict):
+            return req.custom_parameters.get('keywords', '')
+        return ''
+
+    @keywords.setter
+    def keywords(self, val):
+        req = getattr(self, 'requirements', None)
+        if req:
+            params = dict(req.custom_parameters or {})
+            params['keywords'] = val
+            req.custom_parameters = params
+            req.save()
+
+    def hypotheses(self, val):
+        req = getattr(self, 'requirements', None)
+        if req:
+            if not isinstance(req.custom_parameters, dict):
+                req.custom_parameters = {}
+            req.custom_parameters['research_hypotheses'] = val
+            req.save(update_fields=['custom_parameters'])
+
+    @property
+    def scope_and_delimitations(self):
+        req = getattr(self, 'requirements', None)
+        if req and isinstance(req.custom_parameters, dict):
+            return req.custom_parameters.get('scope_and_delimitations', '')
+        return ''
+
+    @property
+    def limitations(self):
+        req = getattr(self, 'requirements', None)
+        if req and isinstance(req.custom_parameters, dict):
+            return req.custom_parameters.get('limitations', '')
+        return ''
+
+    @property
+    def methodology_summary(self):
+        req = getattr(self, 'requirements', None)
+        if req:
+            return req.research_methodology or ''
+        return ''
+
+    @property
+    def target_word_count(self):
+        req = getattr(self, 'requirements', None)
+        if req and req.target_word_count:
+            return req.target_word_count
+        return 10000
+
 
 class ResearchRequirements(models.Model):
     """

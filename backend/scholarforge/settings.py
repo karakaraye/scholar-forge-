@@ -4,6 +4,7 @@ Django settings for ScholarForge AI Stage 1.
 
 from pathlib import Path
 import os
+import sys
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -19,6 +20,14 @@ SECRET_KEY = os.environ.get(
 )
 
 DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() in ('true', '1', 'yes')
+
+# True while running the automated test suite (pytest or `manage.py test`).
+# Enables deterministic offline behaviour such as the mock AI engine.
+TESTING = (
+    os.environ.get('DJANGO_TESTING', '').lower() in ('true', '1', 'yes')
+    or 'pytest' in sys.modules
+    or (len(sys.argv) > 1 and sys.argv[1] == 'test')
+)
 
 ALLOWED_HOSTS = os.environ.get(
     'DJANGO_ALLOWED_HOSTS',
@@ -132,6 +141,13 @@ USE_TZ = True
 # Static files
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# Private user files: uploaded datasets, source documents, supervisor feedback,
+# guideline files and generated DOCX/PDF exports. Never served directly; exports are
+# streamed through the authorized download endpoint. Keep this outside the source tree
+# in production by setting DJANGO_MEDIA_ROOT (e.g. a mounted volume).
+MEDIA_ROOT = Path(os.environ.get('DJANGO_MEDIA_ROOT', BASE_DIR / 'media')).resolve()
+MEDIA_URL = '/media/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

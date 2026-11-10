@@ -12,3 +12,4 @@ urlpatterns = [
     path('<uuid:id>/', ResearchProjectDetailView.as_view(), name='project-detail'),
     path('<uuid:id>/archive/', ResearchProjectArchiveView.as_view(), name='project-archive'),
 ]
+

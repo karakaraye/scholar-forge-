@@ -13,6 +13,13 @@ local_settings.py
 db.sqlite3-journal
 media/
 staticfiles/
+
+# User uploads & generated export artifacts (private data, never commit)
+backend/media/
+backend/uploads/
+backend/exports/
+backend/scratch/
+backend/test_*.pdf
 venv/
 .venv/
 env/
@@ -42,3 +49,4 @@ playwright/.cache/
 .idea/
 .DS_Store
 Thumbs.db
+

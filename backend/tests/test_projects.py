@@ -246,3 +246,4 @@ class TestDisciplinesAndProjects:
         response = api_client.delete(detail_url)
         assert response.status_code == status.HTTP_204_NO_CONTENT
         assert not ResearchProject.objects.filter(id=sample_project_a.id).exists()
+

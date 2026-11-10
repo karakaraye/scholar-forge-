@@ -27,3 +27,4 @@ export function formatTimeAgo(dateString: string): string {
   if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)}d ago`;
   return formatDate(dateString);
 }
+

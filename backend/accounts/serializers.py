@@ -106,3 +106,4 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
     uid = serializers.CharField(required=True)
     token = serializers.CharField(required=True)
     new_password = serializers.CharField(required=True, write_only=True, validators=[validate_password])
+

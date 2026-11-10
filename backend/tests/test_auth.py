@@ -136,3 +136,4 @@ class TestAuthentication:
             'password': 'BrandNewPassword2026!'
         }, format='json')
         assert login_resp.status_code == status.HTTP_200_OK
+
